@@ -33,7 +33,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Source requirement** | Mic required, app optional | Can record mic-only or mic + app. App-only not supported. |
 | **Source selection UI** | Start recording dialog | When clicking Record, show quick picker for mic + optional app |
 | **Remember sources** | Yes, auto-select last used | Pre-select previous mic + app on next launch |
-| **App picker contents** | Apps with audio capability | Filter to apps known to produce audio (browsers, Zoom, Slack, etc.) |
+| **App picker contents** | Any running app | Show all running applications in the picker |
 | **No apps available** | Show empty state, mic-only | Display message, allow starting mic-only recording |
 | **Audio buffers** | Pre-allocated (4096 frames) | No malloc in real-time callbacks for audio quality |
 
@@ -45,7 +45,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Session naming** | Click to rename | Default is relative time ("Today 9:30 AM"), user can rename |
 | **Session preview** | First ~50 chars | Truncated preview of first line in sidebar |
 | **Session limit** | Warn at 1 hour, prompt for new | Modal prompting to start new session |
-| **Storage limit** | Warn at 1GB | Show warning when database exceeds 1GB, suggest cleanup |
+| **Storage limit** | Warn at 1GB (advisory) | Show dismissible warning when database exceeds 1GB |
 | **Transcript editing** | Read-only | No editing, preserves original transcription |
 | **Auto-scroll** | Pause if user scrolls up | Resume auto-scroll when user scrolls back to bottom |
 | **View history while recording** | Yes, recording continues | Can browse past sessions, recording runs in background |
@@ -54,7 +54,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Visual style** | Native macOS | System fonts, colors follow system light/dark mode |
 | **Session deletion** | Yes, with confirmation | Swipe or button, shows "Delete session?" confirmation dialog |
 | **Session export** | Yes, plain text with labels | "You: text\\nRemote: text" format, no timestamps |
-| **Crash recovery** | Prompt on next launch | Detect crash, offer to recover last session |
+| **Crash recovery** | Show last transcript | Detect crash, reopen recovered session for viewing (resume is v2) |
 | **Sidebar shows duration** | Yes | Display recording duration alongside date/time |
 | **Session retention** | Infinite until deleted | Keep all sessions forever, user manually deletes |
 | **Window state** | Remember position/size | Restore window frame on next launch |
@@ -77,6 +77,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Hotkey** | User configurable, no default | User must set their own shortcut in settings (none by default) |
 | **Hotkey when not recording** | Start with last sources | No dialog, immediately start using remembered mic/app |
+| **Hotkey without sources set** | Open Start Recording dialog | If no previous sources or permissions, show dialog to configure |
 | **Hotkey when paused** | Resume recording | Hotkey resumes capture from paused state |
 | **Hotkey brings to foreground** | Configurable | User can choose whether hotkey brings app to front |
 | **Hotkey debounce** | 500ms | Ignore repeated presses within 500ms to prevent accidental toggles |
@@ -110,14 +111,14 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Hotkey conflict** | Warn on conflict | Show warning if chosen hotkey is already in use system-wide |
 | **Model updates** | No auto-update check | Use downloaded model until user clears cache |
 | **Clear model cache** | Yes, in Settings | Allow users to delete model and re-download |
-| **Diagnostics export** | Yes, in Settings | Export logs + system info (no audio) for troubleshooting |
+| **Diagnostics export** | v2 feature | Moved to post-MVP |
 | **Always-on-top persistence** | UserDefaults | Remember preference, apply on next launch |
 | **Mic unavailable on launch** | Fall back to system default | If last-used mic is unplugged, silently use system default |
 | **Model download interruption** | Resume from where left off | Support partial downloads, continue on network reconnect |
-| **System audio capture failure** | Pause and alert | If stream fails mid-session, pause recording and show dialog |
+| **System audio capture failure** | Continue mic-only | Auto-switch to mic-only, show brief notification |
 | **Unsupported macOS version** | Show alert and quit | Display message explaining macOS 15+ required, then exit |
-| **1-hour warning type** | Modal dialog | Requires user action: "Continue Recording" or "Stop and Save" |
-| **Event logging** | Structured logs to file | Log start/stop/pause/errors for diagnostics export |
+| **1-hour warning type** | Modal dialog, pauses recording | Recording pauses while shown; user chooses "Continue" or "Stop and Save" |
+| **Event logging** | Structured logs to file | Log start/stop/pause/errors for crash detection |
 
 ### Transcription Behavior
 | Decision | Choice | Notes |
@@ -127,7 +128,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Typing indicator** | Subtle blinking cursor | Show at end of line while transcription continues |
 | **Silence detection** | Silero VAD (neural) | FluidAudio's Silero VAD: <2ms inference, 32ms chunks, robust to noise |
 | **Silence duration** | User configurable | Default 1.5s silence ends a line. User can adjust in Settings. |
-| **Chunk boundaries** | Smart boundary detection | Detect silence/pauses for natural boundaries, avoid cutting words |
+| **Chunk boundaries** | VAD-driven + timer fallback | Silero VAD detects speech end; 1.5s timer as fallback for continuous speech |
 | **Simultaneous speech** | Interleaved by timestamp | When both speak at once, order lines by actual timing |
 | **Parallel transcription** | Yes, both streams concurrent | Transcribe mic and app audio in parallel for lower latency |
 | **Transcription failure** | Silent skip | Skip failed chunk, don't show error marker |
@@ -144,7 +145,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Timestamp storage** | Start time only | Record when each line began, sufficient for ordering |
 | **Mid-session source change** | Allowed, same session | Can switch mic/app mid-recording, session continues |
 | **Source change indication** | None | Transcript continues seamlessly, no marker when sources change |
-| **Pause behavior** | Mute streams (keep alive) | Keep audio streams alive but stop processing - faster resume |
+| **Pause behavior** | Keep alive, discard buffers | Streams stay running, buffers discarded, skip processing - faster resume |
 | **Buffer overflow** | Keep all, catch up | Never drop audio, transcription catches up (FluidAudio is fast) |
 | **Offline mode** | Fully offline after download | No network required after initial model download |
 | **Localization** | English only for MVP | UI strings in English, localization is post-MVP |
@@ -401,7 +402,6 @@ protocol TranscriptionProvider {
 - [ ] Silence duration threshold (default: 1.5s) - how long silence before new line
 - [ ] Always-on-top toggle (persisted)
 - [ ] Clear model cache button
-- [ ] Export diagnostics button (logs + system info, no audio)
 
 ### Data Model
 - [ ] `TranscriptLine`: text, source (you/remote), timestamp (hidden in MVP)
@@ -421,6 +421,8 @@ protocol TranscriptionProvider {
 - [ ] Custom speaker labels
 - [ ] Audio recording + playback (save raw audio alongside transcripts)
 - [ ] Filler word removal option (uh, um, er via regex patterns)
+- [ ] Diagnostics export (logs + system info, reveal in Finder)
+- [ ] Crash recovery: offer to resume recording
 - [ ] UI localization (prepare NSLocalizedString infrastructure)
 
 ### Future
@@ -479,7 +481,6 @@ Vibescribe/
 │   │   ├── DatabaseManager.swift        # SQLite persistence for sessions
 │   │   ├── HotkeyManager.swift          # Global hotkey registration
 │   │   ├── PermissionsManager.swift     # Mic + screen recording permissions
-│   │   ├── DiagnosticsManager.swift     # Export logs + system info
 │   │   └── EventLogger.swift            # Structured event logging (start/stop/pause/errors)
 │   ├── Utilities/
 │   │   └── ThreadSafeAudioBuffer.swift  # Lock-protected audio buffer
