@@ -81,11 +81,20 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Recording indicator** | Red dot + pulse (recording), yellow dot static (paused) | Visual state change when paused |
 | **Click Record while recording** | Ignore (no-op) | Clicking Record again does nothing if already recording |
 
+### Permissions
+| Decision | Choice | Notes |
+|----------|--------|-------|
+| **Permission order** | Sequential: mic first, then screen | Request mic upfront, screen recording after mic granted |
+| **Mic denied** | Allow browsing only | Can view past sessions, can't record until mic granted |
+| **Screen recording denied** | Allow mic-only recording | App works, just can't capture system audio. Note shown in app picker. |
+| **Permission check timing** | On demand | Check mic when clicking Record, check screen when selecting an app |
+| **Runtime permission revoke** | Detect and pause | Monitor for permission changes, pause recording if revoked mid-session |
+| **Open System Settings** | Open app (not deep link) | Button opens System Settings, user navigates to Privacy pane |
+| **Hardened runtime** | Yes | Required for notarization, more secure |
+
 ### Error Handling
 | Decision | Choice | Notes |
 |----------|--------|-------|
-| **Permissions timing** | During first-run setup | Request mic + screen recording upfront before anything else |
-| **Permissions denied** | Inline error + retry | Display message in UI with button to open System Settings |
 | **Model download failure** | Show retry button | Block recording until download succeeds |
 | **Model download blocking** | Yes, block until complete | Cannot record until model is downloaded |
 | **Model download UI** | Progress bar + percentage | "Downloading model... 45% (292 MB / 650 MB)" |
@@ -468,8 +477,8 @@ Vibescribe/
 │   │   └── EventLogger.swift            # Structured event logging (start/stop/pause/errors)
 │   ├── Utilities/
 │   │   └── ThreadSafeAudioBuffer.swift  # Lock-protected audio buffer
-│   └── Vibescribe.entitlements          # Permissions
-└── Vibescribe/Info.plist
+│   └── Vibescribe.entitlements          # Hardened runtime + permissions
+└── Vibescribe/Info.plist                # Privacy usage descriptions
 ```
 
 ---
@@ -650,6 +659,89 @@ enum DefaultsKey {
 }
 ```
 
+### Entitlements (Vibescribe.entitlements)
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Audio Input (Microphone) -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Screen Recording (for ScreenCaptureKit system audio) -->
+    <key>com.apple.security.screen-capture.audio-only</key>
+    <true/>
+</dict>
+</plist>
+```
+
+### Info.plist Privacy Descriptions
+```xml
+<!-- Required for mic permission prompt -->
+<key>NSMicrophoneUsageDescription</key>
+<string>Vibescribe needs microphone access to transcribe your voice during recordings.</string>
+
+<!-- Required for screen recording permission prompt -->
+<key>NSScreenCaptureUsageDescription</key>
+<string>Vibescribe needs screen recording permission to capture audio from other applications.</string>
+```
+
+### Permission Checking Code
+```swift
+import AVFoundation
+import ScreenCaptureKit
+
+class PermissionsManager {
+
+    // Check microphone permission
+    func checkMicPermission() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AVCaptureDevice.requestAccess(for: .audio)
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    // Check screen recording permission (for ScreenCaptureKit)
+    func checkScreenPermission() async -> Bool {
+        do {
+            // Attempting to get shareable content triggers permission prompt
+            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    // Open System Settings
+    func openSystemSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:")!)
+    }
+
+    // Monitor for permission changes (call periodically during recording)
+    func startMonitoringPermissions(onRevoked: @escaping (String) -> Void) {
+        // Check mic permission every few seconds during recording
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task {
+                if await self?.checkMicPermission() == false {
+                    onRevoked("microphone")
+                }
+            }
+        }
+    }
+}
+```
+
 ---
 
 ## Verification Checklist
@@ -657,13 +749,20 @@ enum DefaultsKey {
 ### First Run
 - [ ] App launches on macOS 15
 - [ ] Shows alert and quits on older macOS versions (14 and below)
-- [ ] Prompts for mic permission
-- [ ] Shows inline error + retry if mic denied
-- [ ] Prompts for screen recording permission
+- [ ] Prompts for mic permission on first launch
+- [ ] If mic denied: can browse past sessions but Record button shows error
+- [ ] "Open System Settings" button opens System Settings app
+- [ ] Prompts for screen recording when user first selects an app
+- [ ] If screen recording denied: mic-only recording works, note shown in app picker
 - [ ] Model download shows progress bar with percentage and size (e.g., "45% (292 MB / 650 MB)")
 - [ ] Model download resumes after network interruption
 - [ ] Model download completes (~3-5 min, ~650MB)
 - [ ] App works fully offline after model is downloaded
+
+### Permission Edge Cases
+- [ ] If mic permission revoked during recording: pause and show alert
+- [ ] If screen recording revoked during recording: pause system audio, continue mic, notify user
+- [ ] App picker shows "(Screen recording required)" note if permission not granted
 
 ### Recording Flow
 - [ ] Click Record opens Start Recording dialog
