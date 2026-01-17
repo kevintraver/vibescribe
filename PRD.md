@@ -193,34 +193,50 @@ For developer/creative team users (English + European languages), FluidAudio's s
 
 #### Diarization Research (for Post-MVP)
 
-| Library | Accuracy (DER) | macOS Support | Swift Integration | Notes |
-|---------|----------------|---------------|-------------------|-------|
-| **pyannote.audio** | 7-11% | CPU; ANE via FluidAudio | Medium (CoreML) | State-of-the-art, handles overlaps |
-| **WhisperX** | ~pyannote | CPU only, slow | Low (Python) | Combined ASR + diarization |
-| **NeMo** | Strong | Limited CPU fallback | Low | NVIDIA-optimized, avoid for macOS |
-| **Resemblyzer** | Variable | Full CPU/GPU | Low (Python) | Lightweight embeddings only |
+| Solution | Architecture | RTF | Latency | DER | License |
+|----------|--------------|-----|---------|-----|---------|
+| **FluidAudio (Sortformer)** | EEND streaming | ~0.02x | ~1.04s | ~17.7% | CC-BY 4.0 ✓ |
+| **FluidAudio (Pyannote)** | Modular + clustering | ~0.02x | Batch | ~17.7% | MIT code, check weights |
+| **Apple SpeechAnalyzer** | Native (black box) | ~0.015x | <1.0s | Unknown | Bundled with OS |
+| **Sherpa-Onnx** | ONNX Runtime | ~0.1-0.5x | Variable | Variable | Apache 2.0 |
+| **WhisperX** | PyTorch (Python) | >1.0x | Batch only | ~pyannote | MIT |
 
-**Key Finding**: FluidAudio (our chosen transcription framework) **already includes diarization support** with pre-converted pyannote models for native Swift/CoreML. This provides a clear upgrade path:
+**Key Finding**: FluidAudio includes **two diarization approaches**:
+
+1. **Sortformer (streaming)** - Best for real-time UI
+   - End-to-End Neural Diarization (EEND) - single pass, no clustering
+   - ~1.04s latency, processes 50x faster than real-time
+   - CC-BY 4.0 license (commercial OK with NVIDIA attribution)
+
+2. **Pyannote (batch)** - Best for final accuracy
+   - Modular pipeline: segmentation → embeddings → clustering
+   - Higher accuracy for complex multi-speaker scenarios
+   - MIT code, but verify model weights for commercial use
+
+**FluidAudio Components**:
+- **Silero VAD**: 32ms chunks, <2ms inference, ~15MB memory, <5% CPU
+- **Diarization**: Sortformer or Pyannote (both CoreML-optimized for ANE)
+- **ASR**: Parakeet (already using for transcription)
 
 ```swift
-// Future diarization with FluidAudio
-import FluidAudio
-let diarizer = Diarizer()
+// Streaming diarization (real-time)
+let sortformer = SortformerDiarizer()
+sortformer.processSamples(audioBuffer) // Returns speaker labels per frame
+
+// Batch diarization (post-recording)
+let diarizer = DiarizerManager(config: .default)
 let result = diarizer.diarize(audioData: buffer)
-// Returns speaker segments with timing
 ```
 
-**Recommendation**: pyannote via FluidAudio is the best path for true diarization:
-- Native Swift, no Python bridging needed
-- ANE-optimized for Apple Silicon (target <100ms latency)
-- Same dependency we're already using for transcription
-- 7-11% DER accuracy on benchmarks
+**Strategic Recommendation**:
+- **Real-time (live view)**: Use Sortformer - low latency, streaming-native
+- **Post-processing (final transcript)**: Use Pyannote - higher accuracy
 
 **Integration Approach** (post-MVP):
-1. Add `DiarizationService` alongside `TranscriptionService`
-2. Run diarization on audio chunks in parallel with transcription
-3. Merge diarization speaker IDs with transcription results
-4. Replace source-based labels with true speaker labels
+1. Add `DiarizationService` with toggle for Sortformer vs Pyannote mode
+2. Run diarization in parallel with transcription (same audio buffer)
+3. Merge speaker IDs with transcription timestamps
+4. Replace source-based labels ("You"/"Remote") with true speaker IDs
 
 ---
 
