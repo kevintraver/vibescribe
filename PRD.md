@@ -32,7 +32,8 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Source requirement** | Mic required, app optional | Can record mic-only or mic + app. App-only not supported. |
 | **Source selection UI** | Start recording dialog | When clicking Record, show quick picker for mic + optional app |
 | **Remember sources** | Yes, auto-select last used | Pre-select previous mic + app on next launch |
-| **App picker contents** | All running apps | Show every running app, user picks which to capture |
+| **App picker contents** | Apps with audio capability | Filter to apps known to produce audio (browsers, Zoom, Slack, etc.) |
+| **No apps available** | Show empty state, mic-only | Display message, allow starting mic-only recording |
 
 ### Session & UI
 | Decision | Choice | Notes |
@@ -50,12 +51,19 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Session deletion** | Yes, swipe or button | Allow deleting sessions from sidebar in MVP |
 | **Session export** | Yes, plain text | Export session as .txt file with speaker labels |
 | **Crash recovery** | Prompt on next launch | Detect crash, offer to recover last session |
+| **Sidebar shows duration** | Yes | Display recording duration alongside date/time |
+| **Session retention** | Infinite until deleted | Keep all sessions forever, user manually deletes |
+| **Window state** | Remember position/size | Restore window frame on next launch |
+| **Multi-window** | Single window only | One window for sidebar + transcript + controls |
 
 ### Copy & Interaction
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Copy feedback** | Brief toast/checkmark | Small confirmation that disappears after 1-2 seconds |
 | **Multi-select copy** | Yes, Cmd+click | Select multiple lines, copy all at once |
+| **Multi-copy format** | Newline separated, no labels | Each line on its own line, text only |
+| **Copy All button** | No | Use Cmd+A to select all, then copy |
+| **Keyboard shortcuts** | Standard macOS | Cmd+C copy, Cmd+S stop, Cmd+P pause/resume |
 | **Dock presence** | Always show in dock | Standard macOS app behavior |
 
 ### Global Hotkey
@@ -74,21 +82,27 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Permissions denied** | Inline error + retry | Display message in UI with button to open System Settings |
 | **Model download failure** | Show retry button | Block recording until download succeeds |
 | **Model download blocking** | Yes, block until complete | Cannot record until model is downloaded |
-| **Transcription failures** | Show error marker | Display [Transcription Failed] in transcript |
+| **Transcription failures** | Silent skip | Skip failed chunk, continue recording |
 | **Model** | Parakeet v3 only | Multilingual, simpler UX, one model to download |
 | **App quits during recording** | Pause and notify | Pause system audio capture, show notification, continue mic |
 | **Mic disconnect** | Pause and alert | Pause recording, show alert to reconnect or stop |
 | **Hotkey conflict** | Warn on conflict | Show warning if chosen hotkey is already in use system-wide |
+| **Model updates** | No auto-update check | Use downloaded model until user clears cache |
+| **Clear model cache** | Yes, in Settings | Allow users to delete model and re-download |
+| **Diagnostics export** | Yes, in Settings | Export logs + system info (no audio) for troubleshooting |
+| **Always-on-top persistence** | UserDefaults | Remember preference, apply on next launch |
 
 ### Transcription Behavior
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Line ordering** | Timestamp-based interleaving | Use sub-chunk timestamps to interleave mic/app lines accurately |
-| **Silence detection** | Per source, fixed 1.5s | 1.5s silence in mic ends "You" line. Not user-adjustable. |
+| **Line updates** | Append to existing line | Mutable lines - continue adding until silence or speaker change |
+| **Typing indicator** | Subtle blinking cursor | Show at end of line while transcription continues |
+| **Silence detection** | User configurable in Settings | Default 1.5s silence, 0.01 RMS threshold. User can adjust. |
 | **Chunk boundaries** | Smart boundary detection | Detect silence/pauses for natural boundaries, avoid cutting words |
 | **Simultaneous speech** | Interleaved by timestamp | When both speak at once, order lines by actual timing |
 | **Parallel transcription** | Yes, both streams concurrent | Transcribe mic and app audio in parallel for lower latency |
-| **Transcription failure** | Show [Transcription Failed] | Display error marker in transcript so user knows audio was lost |
+| **Transcription failure** | Silent skip | Skip failed chunk, don't show error marker |
 | **Browser audio** | Capture all app audio | No tab-specific capture. All browser audio captured together. |
 | **Noise reduction** | None | Send raw audio to model. Let Parakeet handle it. |
 | **Language detection** | Auto-detect from audio | Parakeet v3 auto-detects. No user input needed. |
@@ -155,13 +169,42 @@ For developer/creative team users (English + European languages), FluidAudio's s
 
 ### Speaker Diarization Finding
 
-**None of the 4 researched apps implement true speaker diarization.** It requires separate models (pyannote, resemblyzer) and adds significant complexity.
+**None of the 4 researched apps implement true speaker diarization.** It requires separate models and adds significant complexity.
 
 **MVP Approach**: Use audio source as speaker proxy:
 - Mic input → "You"
 - System audio → "Remote"
 
-**Future**: Investigate pyannote, WhisperX, NeMo for true diarization.
+#### Diarization Research (for Post-MVP)
+
+| Library | Accuracy (DER) | macOS Support | Swift Integration | Notes |
+|---------|----------------|---------------|-------------------|-------|
+| **pyannote.audio** | 7-11% | CPU; ANE via FluidAudio | Medium (CoreML) | State-of-the-art, handles overlaps |
+| **WhisperX** | ~pyannote | CPU only, slow | Low (Python) | Combined ASR + diarization |
+| **NeMo** | Strong | Limited CPU fallback | Low | NVIDIA-optimized, avoid for macOS |
+| **Resemblyzer** | Variable | Full CPU/GPU | Low (Python) | Lightweight embeddings only |
+
+**Key Finding**: FluidAudio (our chosen transcription framework) **already includes diarization support** with pre-converted pyannote models for native Swift/CoreML. This provides a clear upgrade path:
+
+```swift
+// Future diarization with FluidAudio
+import FluidAudio
+let diarizer = Diarizer()
+let result = diarizer.diarize(audioData: buffer)
+// Returns speaker segments with timing
+```
+
+**Recommendation**: pyannote via FluidAudio is the best path for true diarization:
+- Native Swift, no Python bridging needed
+- ANE-optimized for Apple Silicon (target <100ms latency)
+- Same dependency we're already using for transcription
+- 7-11% DER accuracy on benchmarks
+
+**Integration Approach** (post-MVP):
+1. Add `DiarizationService` alongside `TranscriptionService`
+2. Run diarization on audio chunks in parallel with transcription
+3. Merge diarization speaker IDs with transcription results
+4. Replace source-based labels with true speaker labels
 
 ---
 
@@ -217,7 +260,7 @@ protocol TranscriptionProvider {
 │      └── [Future: WhisperKit, AppleSpeech...]   │
 ├─────────────────────────────────────────────────┤
 │  SessionManager                                 │
-│  ├── Transcript storage (JSON)                  │
+│  ├── Transcript storage (SQLite)                │
 │  └── Session history                            │
 └─────────────────────────────────────────────────┘
 ```
@@ -287,6 +330,7 @@ protocol TranscriptionProvider {
 ### Session History (Sidebar)
 - [ ] Left sidebar shows list of past sessions
 - [ ] Each entry: date/time, duration, preview of first line
+- [ ] Chronological order (most recent first)
 - [ ] Click session to view full transcript on right
 - [ ] Current/active session highlighted at top
 
@@ -295,10 +339,18 @@ protocol TranscriptionProvider {
 - [ ] Request screen recording permission (for system audio)
 - [ ] Model download progress indicator (~650MB, 3-5 min)
 
+### Settings (Preferences Window)
+- [ ] Global hotkey configuration
+- [ ] Silence detection threshold (default: 1.5s, 0.01 RMS)
+- [ ] Always-on-top toggle (persisted)
+- [ ] Clear model cache button
+- [ ] Export diagnostics button (logs + system info, no audio)
+
 ### Data Model
 - [ ] `TranscriptLine`: text, source (you/remote), timestamp (hidden in MVP)
-- [ ] `Session`: id, startTime, endTime, lines[]
+- [ ] `Session`: id, startTime, endTime, duration, lines[]
 - [ ] Store last used mic ID and app bundle ID in UserDefaults
+- [ ] Store window frame in UserDefaults
 
 ---
 
@@ -312,11 +364,12 @@ protocol TranscriptionProvider {
 - [ ] Custom speaker labels
 
 ### Future
-- [ ] True speaker diarization (pyannote or similar)
+- [ ] True speaker diarization via FluidAudio (pyannote models, 7-11% DER)
 - [ ] LLM post-processing (cleanup, summarize)
-- [ ] Keyboard shortcuts for copy
 - [ ] Export formats (markdown, JSON)
 - [ ] Additional transcription engines (WhisperKit for 99 languages)
+- [ ] Search/filter sessions in sidebar
+- [ ] Speaker enrollment (learn voices for consistent labeling)
 
 ---
 
@@ -365,7 +418,8 @@ Vibescribe/
 │   │   ├── FluidAudioProvider.swift     # FluidAudio/Parakeet implementation
 │   │   ├── DatabaseManager.swift        # SQLite persistence for sessions
 │   │   ├── HotkeyManager.swift          # Global hotkey registration
-│   │   └── PermissionsManager.swift     # Mic + screen recording permissions
+│   │   ├── PermissionsManager.swift     # Mic + screen recording permissions
+│   │   └── DiagnosticsManager.swift     # Export logs + system info
 │   ├── Utilities/
 │   │   └── ThreadSafeAudioBuffer.swift  # Lock-protected audio buffer
 │   └── Vibescribe.entitlements          # Permissions
@@ -382,8 +436,9 @@ Vibescribe/
 4. **Transcription** — FluidAudio integration, chunked processing
 5. **Transcript UI** — Display lines with source labels, copy buttons
 6. **System audio** — ScreenCaptureKit capture (requires screen recording permission)
-7. **Session persistence** — Save/load JSON transcripts
-8. **Polish** — Always-on-top toggle, global hotkey, setup flow
+7. **Session persistence** — SQLite database for sessions
+8. **Settings** — Preferences window, hotkey config, silence thresholds
+9. **Polish** — Always-on-top toggle, diagnostics export, setup flow
 
 ---
 
@@ -542,6 +597,9 @@ enum DefaultsKey {
     static let lastAppBundleID = "lastAppBundleID"
     static let globalHotkey = "globalHotkey"
     static let alwaysOnTop = "alwaysOnTop"
+    static let windowFrame = "windowFrame"
+    static let silenceDuration = "silenceDuration"      // Default: 1.5
+    static let silenceThreshold = "silenceThreshold"    // Default: 0.01
 }
 ```
 
@@ -602,10 +660,19 @@ enum DefaultsKey {
 - [ ] Can click past session to view its transcript
 - [ ] Can delete sessions via swipe or button
 
+### Settings
+- [ ] Settings window opens from menu bar (Cmd+,)
+- [ ] Can configure global hotkey
+- [ ] Can adjust silence detection threshold
+- [ ] Always-on-top toggle persists across launches
+- [ ] Clear model cache works (deletes, prompts re-download)
+- [ ] Export diagnostics creates log file
+
 ### Edge Cases
 - [ ] No crash if selected app quits during recording
 - [ ] Graceful handling if no apps with audio running
 - [ ] Works with AirPods / external mics
+- [ ] Window position/size restored on launch
 
 ---
 
@@ -626,4 +693,12 @@ The `TranscriptionProvider` protocol enables adding engines without changing cor
 
 - **FluidAudio**: https://github.com/FluidInference/FluidAudio
   - DeepWiki MCP available for detailed documentation
+  - Includes transcription (Parakeet) AND diarization (pyannote) support
 - **Research apps**: Hex, FluidVoice, VoiceInk, Handy (in `/Users/kevin/code/transcription-apps`)
+
+### Diarization Research Sources
+- [pyannote/pyannote-audio](https://github.com/pyannote/pyannote-audio) - Neural speaker diarization
+- [FluidAudio Speaker Diarization](https://cocoapods.org/pods/FluidAudio) - Swift SDK with CoreML
+- [Near-Real-Time Speaker Diarization on CoreML](https://inference.plus/p/low-latency-speaker-diarization-on)
+- [WhisperX](https://github.com/m-bain/whisperX) - ASR with word-level timestamps & diarization
+- [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) - Voice embeddings for recognition
