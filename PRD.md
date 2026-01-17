@@ -73,7 +73,9 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Hotkey when not recording** | Start with last sources | No dialog, immediately start using remembered mic/app |
 | **Hotkey when paused** | Resume recording | Hotkey resumes capture from paused state |
 | **Hotkey brings to foreground** | Configurable | User can choose whether hotkey brings app to front |
+| **Hotkey debounce** | 500ms | Ignore repeated presses within 500ms to prevent accidental toggles |
 | **Recording indicator** | Red dot + pulse animation | Classic recording indicator in window |
+| **Click Record while recording** | Ignore (no-op) | Clicking Record again does nothing if already recording |
 
 ### Error Handling
 | Decision | Choice | Notes |
@@ -91,6 +93,12 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Clear model cache** | Yes, in Settings | Allow users to delete model and re-download |
 | **Diagnostics export** | Yes, in Settings | Export logs + system info (no audio) for troubleshooting |
 | **Always-on-top persistence** | UserDefaults | Remember preference, apply on next launch |
+| **Mic unavailable on launch** | Fall back to system default | If last-used mic is unplugged, silently use system default |
+| **Model download interruption** | Resume from where left off | Support partial downloads, continue on network reconnect |
+| **System audio capture failure** | Pause and alert | If stream fails mid-session, pause recording and show dialog |
+| **Unsupported macOS version** | Show alert and quit | Display message explaining macOS 15+ required, then exit |
+| **1-hour warning type** | Modal dialog | Requires user action: "Continue Recording" or "Stop and Save" |
+| **Event logging** | Structured logs to file | Log start/stop/pause/errors for diagnostics export |
 
 ### Transcription Behavior
 | Decision | Choice | Notes |
@@ -112,6 +120,14 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Processing indicator** | Subtle spinner/dots | Show transcription in progress during any lag |
 | **Persistence** | SQLite database | More robust than JSON, supports queries |
 | **Auto-save frequency** | Every chunk (~1.5s) | Write after each transcription for maximum data safety |
+| **Draft text** | Yes, show while processing | Display provisional text that updates when transcription completes |
+| **Timestamp storage** | Start time only | Record when each line began, sufficient for ordering |
+| **Mid-session source change** | Allowed, same session | Can switch mic/app mid-recording, session continues |
+| **Source change indication** | None | Transcript continues seamlessly, no marker when sources change |
+| **Pause behavior** | Mute streams (keep alive) | Keep audio streams alive but stop processing - faster resume |
+| **Buffer overflow** | Keep all, catch up | Never drop audio, transcription catches up (FluidAudio is fast) |
+| **Offline mode** | Fully offline after download | No network required after initial model download |
+| **Localization** | English only for MVP | UI strings in English, localization is post-MVP |
 
 ---
 
@@ -272,13 +288,14 @@ protocol TranscriptionProvider {
 ### Recording Flow
 - [ ] Record button opens "Start Recording" dialog
 - [ ] Dialog shows: mic dropdown, app dropdown (for system audio)
-- [ ] Pre-select last used mic and app
+- [ ] Pre-select last used mic and app (fall back to system default if unavailable)
 - [ ] Start button begins dual capture (mic + selected app)
 - [ ] **Large, prominent Pause/Resume button** while recording
 - [ ] **Large Stop button** to end session
-- [ ] Global hotkey (user configurable) toggles recording
+- [ ] Global hotkey (user configurable) toggles recording (500ms debounce)
 - [ ] Red dot + pulse animation while recording (pauses when paused)
 - [ ] Stop button ends recording, auto-saves session
+- [ ] Allow changing mic/app sources mid-session (session continues)
 
 ### Audio Capture
 - [ ] Mic capture via AVAudioEngine (16kHz mono Float32)
@@ -292,6 +309,8 @@ protocol TranscriptionProvider {
 - [ ] Chunked processing: buffer 1.5s, transcribe, append
 - [ ] New line on speaker change OR 1.5s silence
 - [ ] Source labels: "You" (mic) / "Remote" (system audio)
+- [ ] Draft text shown while processing (updates when complete)
+- [ ] Mutable lines: append to existing line until silence/speaker change
 
 ### Window Layout
 - [ ] Window size: 600x500 (wider for sidebar + transcript)
@@ -362,6 +381,8 @@ protocol TranscriptionProvider {
 - [ ] Copy with speaker labels option
 - [ ] Show/hide timestamps toggle
 - [ ] Custom speaker labels
+- [ ] Audio recording + playback (save raw audio alongside transcripts)
+- [ ] UI localization (prepare NSLocalizedString infrastructure)
 
 ### Future
 - [ ] True speaker diarization via FluidAudio (pyannote models, 7-11% DER)
@@ -419,7 +440,8 @@ Vibescribe/
 │   │   ├── DatabaseManager.swift        # SQLite persistence for sessions
 │   │   ├── HotkeyManager.swift          # Global hotkey registration
 │   │   ├── PermissionsManager.swift     # Mic + screen recording permissions
-│   │   └── DiagnosticsManager.swift     # Export logs + system info
+│   │   ├── DiagnosticsManager.swift     # Export logs + system info
+│   │   └── EventLogger.swift            # Structured event logging (start/stop/pause/errors)
 │   ├── Utilities/
 │   │   └── ThreadSafeAudioBuffer.swift  # Lock-protected audio buffer
 │   └── Vibescribe.entitlements          # Permissions
@@ -609,11 +631,14 @@ enum DefaultsKey {
 
 ### First Run
 - [ ] App launches on macOS 15
+- [ ] Shows alert and quits on older macOS versions (14 and below)
 - [ ] Prompts for mic permission
 - [ ] Shows inline error + retry if mic denied
 - [ ] Prompts for screen recording permission
 - [ ] Model download starts with progress indicator
+- [ ] Model download resumes after network interruption
 - [ ] Model download completes (~3-5 min, ~650MB)
+- [ ] App works fully offline after model is downloaded
 
 ### Recording Flow
 - [ ] Click Record opens Start Recording dialog
@@ -633,6 +658,9 @@ enum DefaultsKey {
 - [ ] Lines appear within ~2s of speech (chunked processing)
 - [ ] New line created after 1.5s silence
 - [ ] Dual capture works: mic and app audio interleaved
+- [ ] Draft text appears while processing, updates when complete
+- [ ] Same line is appended to until silence or speaker change
+- [ ] Can change mic/app sources mid-session (session continues)
 
 ### Window & Layout
 - [ ] Window opens at 600x500
