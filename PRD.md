@@ -126,7 +126,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Line ordering** | Timestamp-based interleaving | Use sub-chunk timestamps to interleave mic/app lines accurately |
 | **Line updates** | Append to existing line | Mutable lines - continue adding until silence or speaker change |
-| **Typing indicator** | Blinking cursor only | Show at end of line while drafting (no separate spinner) |
+| **Typing indicator** | None | Text just appears/updates, no cursor or spinner needed |
 | **Silence detection** | Silero VAD (neural) | FluidAudio's Silero VAD: <2ms inference, 32ms chunks, robust to noise |
 | **Silence duration** | User configurable (0.5s - 3.0s) | Default 1.5s, 0.5s steps. Controls line-break timing after VAD detects silence. |
 | **Chunk boundaries** | VAD-driven + timer fallback | Silero VAD detects speech end; 1.5s timer as fallback for continuous speech |
@@ -139,7 +139,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Profanity** | Show raw, uncensored | Transcribe exactly what's said. |
 | **Confidence display** | No distinction | Show all text the same regardless of confidence level |
 | **Target latency** | Under 2 seconds | Text should appear within 2s of speech |
-| **Processing indicator** | None (cursor suffices) | Blinking cursor indicates active transcription |
+| **Processing indicator** | None | Text appears directly, no visual indicator needed |
 | **Persistence** | SQLite database | More robust than JSON, supports queries |
 | **Auto-save frequency** | Every chunk (~1.5s) | Write after each transcription for maximum data safety |
 | **Draft text** | Overwrite in place | Same line updates as transcription refines, final text replaces draft |
