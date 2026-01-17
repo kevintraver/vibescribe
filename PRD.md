@@ -35,11 +35,13 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Remember sources** | Yes, auto-select last used | Pre-select previous mic + app on next launch |
 | **App picker contents** | Apps with audio capability | Filter to apps known to produce audio (browsers, Zoom, Slack, etc.) |
 | **No apps available** | Show empty state, mic-only | Display message, allow starting mic-only recording |
+| **Audio buffers** | Pre-allocated (4096 frames) | No malloc in real-time callbacks for audio quality |
 
 ### Session & UI
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Sessions** | New session each recording | Every Start creates fresh session |
+| **Minimum duration** | 3 seconds | Recordings shorter than 3s are discarded (accidental starts) |
 | **Session naming** | Click to rename | Default is relative time ("Today 9:30 AM"), user can rename |
 | **Session preview** | First ~50 chars | Truncated preview of first line in sidebar |
 | **Session limit** | Warn at 1 hour, prompt for new | Modal prompting to start new session |
@@ -78,6 +80,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Hotkey when paused** | Resume recording | Hotkey resumes capture from paused state |
 | **Hotkey brings to foreground** | Configurable | User can choose whether hotkey brings app to front |
 | **Hotkey debounce** | 500ms | Ignore repeated presses within 500ms to prevent accidental toggles |
+| **Escape key (when focused)** | Stops recording | Pressing Escape while app is focused stops the session |
 | **Recording indicator** | Red dot + pulse (recording), yellow dot static (paused) | Visual state change when paused |
 | **Click Record while recording** | Ignore (no-op) | Clicking Record again does nothing if already recording |
 
@@ -97,11 +100,13 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Model download failure** | Show retry button | Block recording until download succeeds |
 | **Model download blocking** | Yes, block until complete | Cannot record until model is downloaded |
-| **Model download UI** | Progress bar + percentage | "Downloading model... 45% (292 MB / 650 MB)" |
+| **Model download UI** | Two-phase progress | 0-50% downloading, 50-100% loading/validating model |
+| **Model prewarm** | Yes, on app launch | Pre-warm CoreML model for ~3s at launch, first transcription is instant |
 | **Transcription failures** | Silent skip | Skip failed chunk, continue recording |
 | **Model** | Parakeet v3 only | Multilingual, simpler UX, one model to download |
 | **App quits during recording** | Pause and notify | Pause system audio capture, show notification, continue mic |
 | **Mic disconnect** | Pause and alert | Pause recording, show alert to reconnect or stop |
+| **Device change debounce** | 200ms | Wait 200ms for device state to settle before responding |
 | **Hotkey conflict** | Warn on conflict | Show warning if chosen hotkey is already in use system-wide |
 | **Model updates** | No auto-update check | Use downloaded model until user clears cache |
 | **Clear model cache** | Yes, in Settings | Allow users to delete model and re-download |
@@ -415,6 +420,7 @@ protocol TranscriptionProvider {
 - [ ] Show/hide timestamps toggle
 - [ ] Custom speaker labels
 - [ ] Audio recording + playback (save raw audio alongside transcripts)
+- [ ] Filler word removal option (uh, um, er via regex patterns)
 - [ ] UI localization (prepare NSLocalizedString infrastructure)
 
 ### Future
@@ -570,11 +576,24 @@ let silenceThreshold: Float = 0.01 // RMS below this = silence
 import FluidAudio
 
 // Download & load models (first run: ~3-5 min, cached after)
-let models = try await AsrModels.downloadAndLoad(version: .v3)
+// Progress: 0-50% download, 50-100% load/validate
+let models = try await AsrModels.downloadAndLoad(version: .v3) { progress in
+    // progress.fractionCompleted: 0.0-0.5 = download, 0.5-1.0 = load
+    updateProgressUI(progress)
+}
+
+// Validate model before use
+guard try await AsrModels.isModelValid(version: .v3) else {
+    throw ModelError.validationFailed
+}
 
 // Initialize manager
 let asrManager = AsrManager(config: .default)
 try await asrManager.initialize(models: models)
+
+// Pre-warm model on app launch for instant first transcription
+// This takes ~3s but makes first transcription responsive
+try await asrManager.prewarm()
 
 // Transcribe from Float32 samples (16kHz mono)
 let result = try await asrManager.transcribe(samples, source: .system)
@@ -583,11 +602,20 @@ print(result.confidence)  // 0.0-1.0
 print(result.rtfx)        // Real-time factor (~210x on M4)
 ```
 
-### Thread-Safe Audio Buffer
+### Thread-Safe Audio Buffer (Pre-allocated)
 ```swift
 final class ThreadSafeAudioBuffer {
-    private var buffer: [Float] = []
+    // Pre-allocate for ~10s of audio at 16kHz to avoid malloc in callbacks
+    private static let maxCapacity = 16000 * 10
+    private var buffer: [Float]
+    private var writeIndex = 0
     private let lock = NSLock()
+
+    init() {
+        // Reserve capacity upfront - critical for real-time audio quality
+        buffer = [Float]()
+        buffer.reserveCapacity(Self.maxCapacity)
+    }
 
     func append(_ samples: [Float]) {
         lock.lock()
@@ -599,7 +627,7 @@ final class ThreadSafeAudioBuffer {
         lock.lock()
         defer { lock.unlock() }
         let samples = buffer
-        buffer.removeAll()
+        buffer.removeAll(keepingCapacity: true)  // Keep pre-allocated memory
         return samples
     }
 
@@ -607,6 +635,12 @@ final class ThreadSafeAudioBuffer {
         lock.lock()
         defer { lock.unlock() }
         return buffer
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer.count
     }
 }
 ```
@@ -657,6 +691,53 @@ enum DefaultsKey {
     static let windowFrame = "windowFrame"
     static let silenceDuration = "silenceDuration"      // Default: 1.5 seconds
 }
+```
+
+### Audio & Recording Constants
+```swift
+enum AudioConstants {
+    // Audio format
+    static let sampleRate: Double = 16000
+    static let channels: UInt32 = 1
+    static let bitDepth: UInt32 = 16
+
+    // Buffer management (pre-allocated for real-time quality)
+    static let maxBufferFrames: Int = 4096
+    static let bufferCapacitySamples: Int = 16000 * 10  // ~10 seconds
+
+    // Chunk processing
+    static let chunkDurationSeconds: TimeInterval = 1.5
+    static let chunkSamples: Int = Int(sampleRate * chunkDurationSeconds)
+
+    // Timing
+    static let deviceChangeDebounceMs: Int = 200
+    static let hotkeyDebounceMs: Int = 500
+    static let permissionCheckIntervalSeconds: TimeInterval = 5.0
+    static let minRecordingDurationSeconds: TimeInterval = 3.0
+}
+```
+
+### Recording State Machine
+```swift
+enum RecordingState {
+    case idle                    // Not recording, ready to start
+    case recording               // Capturing and transcribing audio
+    case paused                  // Capture stopped, session still open
+    case stopping                // Finalizing session (brief transition)
+}
+
+// Valid transitions:
+// idle → recording (user clicks Start or hotkey)
+// recording → paused (user clicks Pause)
+// recording → stopping (user clicks Stop, presses Escape, or 1-hour limit)
+// paused → recording (user clicks Resume or hotkey)
+// paused → stopping (user clicks Stop)
+// stopping → idle (session saved, <3s discarded)
+
+// Guards:
+// - Can't start if already recording/paused
+// - Can't pause/stop if idle
+// - Duration < 3s on stop → discard session, return to idle
 ```
 
 ### Entitlements (Vibescribe.entitlements)
@@ -754,9 +835,10 @@ class PermissionsManager {
 - [ ] "Open System Settings" button opens System Settings app
 - [ ] Prompts for screen recording when user first selects an app
 - [ ] If screen recording denied: mic-only recording works, note shown in app picker
-- [ ] Model download shows progress bar with percentage and size (e.g., "45% (292 MB / 650 MB)")
+- [ ] Model download shows two-phase progress (0-50% download, 50-100% load/validate)
 - [ ] Model download resumes after network interruption
 - [ ] Model download completes (~3-5 min, ~650MB)
+- [ ] Model pre-warms on app launch (~3s), first transcription is instant
 - [ ] App works fully offline after model is downloaded
 
 ### Permission Edge Cases
@@ -776,6 +858,9 @@ class PermissionsManager {
 - [ ] Pause button stops capture, keeps session open
 - [ ] Resume button resumes capture after pause
 - [ ] Stop button ends session, transcript stays visible
+- [ ] Escape key stops recording when app is focused
+- [ ] Recordings under 3 seconds are discarded (accidental starts)
+- [ ] Device changes handled with 200ms debounce
 - [ ] "New Recording" button appears after Stop
 
 ### Transcription
