@@ -42,7 +42,7 @@ struct VibescribeApp: App {
                         if appState.bringToFrontOnHotkey {
                             NSApp.activate(ignoringOtherApps: true)
                         }
-                        appState.toggleRecording()
+                        await appState.handleHotkeyToggle()
                     }
                 }
             }

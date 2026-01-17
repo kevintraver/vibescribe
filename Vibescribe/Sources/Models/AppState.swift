@@ -30,6 +30,8 @@ final class AppState {
     var showingSessionWarning: Bool = false
     var showingCrashRecovery: Bool = false
     var recoveredSession: Session?
+    var showingPermissionAlert: Bool = false
+    var permissionAlertMessage: String?
 
     // MARK: - Audio Sources
 
@@ -46,7 +48,7 @@ final class AppState {
 
     // MARK: - Settings
 
-    var silenceDuration: Double = 0.8 {
+    var silenceDuration: Double = 1.5 {
         didSet {
             SettingsManager.shared.silenceDuration = silenceDuration
             TranscriptionService.shared.updateSilenceDuration(silenceDuration)
@@ -73,6 +75,7 @@ final class AppState {
 
     private var sessionTimer: Timer?
     private let sessionWarningThreshold: TimeInterval = 3600 // 1 hour
+    private var nextSessionWarningThreshold: TimeInterval = 3600
 
     // MARK: - Initialization
 
@@ -94,7 +97,7 @@ final class AppState {
     }
 
     var canStartRecording: Bool {
-        isModelReady && hasMicPermission && recordingState.canStart
+        isModelReady && recordingState.canStart
     }
 
     var needsSetup: Bool {
@@ -114,6 +117,7 @@ final class AppState {
         EventLogger.shared.log(.recordingStart, sessionId: session.id)
 
         // Start session duration timer
+        nextSessionWarningThreshold = sessionWarningThreshold
         startSessionTimer()
     }
 
@@ -133,13 +137,17 @@ final class AppState {
         }
     }
 
-    func stopRecording() {
+    func beginStopping() {
         guard recordingState.canStop else { return }
         recordingState = .stopping
 
         // Stop session timer
         stopSessionTimer()
         showingSessionWarning = false
+    }
+
+    func finalizeStopRecording() {
+        guard recordingState == .stopping else { return }
 
         if let session = currentSession {
             session.stop()
@@ -177,6 +185,16 @@ final class AppState {
                 toastMessage = nil
             }
         }
+    }
+
+    func showPermissionAlert(_ message: String) {
+        permissionAlertMessage = message
+        showingPermissionAlert = true
+    }
+
+    func dismissPermissionAlert() {
+        showingPermissionAlert = false
+        permissionAlertMessage = nil
     }
 
     func deleteSession(_ session: Session) {
@@ -259,8 +277,9 @@ final class AppState {
 
     private func checkSessionDuration() {
         guard let session = currentSession else { return }
-        if session.duration >= sessionWarningThreshold && !showingSessionWarning {
+        if session.duration >= nextSessionWarningThreshold && !showingSessionWarning {
             showingSessionWarning = true
+            nextSessionWarningThreshold += sessionWarningThreshold
         }
     }
 
@@ -270,14 +289,42 @@ final class AppState {
 
     // MARK: - Hotkey
 
-    func toggleRecording() {
+    func handleHotkeyToggle() async {
         switch recordingState {
         case .idle:
-            showingStartRecordingDialog = true
+            let lastAppBundleId = selectedAppBundleId
+            if lastAppBundleId != nil {
+                PermissionsManager.shared.checkScreenPermission()
+                hasScreenPermission = PermissionsManager.shared.hasScreenPermission
+            }
+
+            if !hasMicPermission && lastAppBundleId == nil {
+                showingStartRecordingDialog = true
+                return
+            }
+
+            if let bundleId = lastAppBundleId {
+                let isRunning = await AppListManager.shared.isAppRunning(bundleId: bundleId)
+                if !isRunning || !hasScreenPermission {
+                    showingStartRecordingDialog = true
+                    return
+                }
+            }
+
+            startNewSession()
+            await TranscriptionService.shared.startRecording(
+                micId: selectedMicId,
+                appBundleId: lastAppBundleId
+            )
+
         case .recording:
             pauseRecording()
+            TranscriptionService.shared.pauseRecording()
+
         case .paused:
             resumeRecording()
+            TranscriptionService.shared.resumeRecording()
+
         case .stopping:
             break
         }

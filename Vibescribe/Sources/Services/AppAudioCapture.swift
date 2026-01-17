@@ -7,6 +7,7 @@ final class AppAudioCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private let buffer: ThreadSafeAudioBuffer
     private var isRunning = false
+    private var isPaused = false
 
     /// Target format: 16kHz mono
     private let targetSampleRate: Int = 16000
@@ -35,9 +36,13 @@ final class AppAudioCapture: NSObject, @unchecked Sendable {
 
         // Create content filter for the app's audio
         // Use SCContentFilter with the target application
-        let filter = SCContentFilter(desktopIndependentWindow: content.windows.first { window in
+        guard let window = content.windows.first(where: { window in
             window.owningApplication?.bundleIdentifier == targetApp.bundleIdentifier
-        } ?? content.windows.first!)
+        }) ?? content.windows.first else {
+            throw AppCaptureError.appNotFound(bundleId)
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: window)
 
         // Configure stream for audio only
         let configuration = SCStreamConfiguration()
@@ -61,6 +66,7 @@ final class AppAudioCapture: NSObject, @unchecked Sendable {
 
         self.stream = newStream
         self.isRunning = true
+        self.isPaused = false
     }
 
     /// Stop capturing audio
@@ -73,6 +79,19 @@ final class AppAudioCapture: NSObject, @unchecked Sendable {
 
         stream = nil
         isRunning = false
+        isPaused = false
+    }
+
+    /// Pause capture (keeps stream running but drops samples)
+    func pause() {
+        guard isRunning else { return }
+        isPaused = true
+    }
+
+    /// Resume capture after pause
+    func resume() {
+        guard isRunning else { return }
+        isPaused = false
     }
 
     /// Convert CMSampleBuffer to Float32 samples
@@ -148,6 +167,7 @@ extension AppAudioCapture: SCStreamDelegate {
 extension AppAudioCapture: SCStreamOutput {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
+        guard !isPaused else { return }
 
         guard let samples = convertToSamples(sampleBuffer) else { return }
 

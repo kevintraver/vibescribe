@@ -60,11 +60,25 @@ final class MicCapture: @unchecked Sendable {
         }
 
         var sampleCount = 0
+        var tapCallCount = 0
 
         // Install tap on input node
         Log.info("Installing audio tap on input node...", category: .audio)
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] inputBuffer, _ in
-            guard let self else { return }
+        Log.info("Tap format: \(inputFormat)", category: .audio)
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] inputBuffer, time in
+            guard let self else {
+                Log.warning("MicCapture: self is nil in tap callback", category: .audio)
+                return
+            }
+
+            tapCallCount += 1
+            let inputFrameLength = inputBuffer.frameLength
+
+            // Log first few callbacks and then periodically
+            if tapCallCount <= 3 || tapCallCount % 100 == 0 {
+                Log.debug("MicCapture tap #\(tapCallCount): received \(inputFrameLength) frames", category: .audio)
+            }
 
             let samples: [Float]
 
@@ -76,7 +90,10 @@ final class MicCapture: @unchecked Sendable {
                 guard let outputBuffer = AVAudioPCMBuffer(
                     pcmFormat: outputFormat,
                     frameCapacity: outputFrameCount
-                ) else { return }
+                ) else {
+                    Log.error("MicCapture: Failed to create output buffer", category: .audio)
+                    return
+                }
 
                 var error: NSError?
                 let status = converter.convert(to: outputBuffer, error: &error) { inNumPackets, outStatus in
@@ -84,11 +101,31 @@ final class MicCapture: @unchecked Sendable {
                     return inputBuffer
                 }
 
-                guard status != .error, let floatData = outputBuffer.floatChannelData else { return }
+                if let error {
+                    Log.error("MicCapture: Converter error: \(error)", category: .audio)
+                }
+
+                if status == .error {
+                    Log.error("MicCapture: Conversion failed with status .error", category: .audio)
+                    return
+                }
+
+                guard let floatData = outputBuffer.floatChannelData else {
+                    Log.error("MicCapture: No float channel data after conversion", category: .audio)
+                    return
+                }
+
                 samples = Array(UnsafeBufferPointer(start: floatData[0], count: Int(outputBuffer.frameLength)))
+
+                if tapCallCount <= 3 {
+                    Log.debug("MicCapture: Converted \(inputFrameLength) -> \(samples.count) samples", category: .audio)
+                }
             } else {
                 // Already in target format
-                guard let floatData = inputBuffer.floatChannelData else { return }
+                guard let floatData = inputBuffer.floatChannelData else {
+                    Log.error("MicCapture: No float channel data in input buffer", category: .audio)
+                    return
+                }
                 samples = Array(UnsafeBufferPointer(start: floatData[0], count: Int(inputBuffer.frameLength)))
             }
 
@@ -98,7 +135,9 @@ final class MicCapture: @unchecked Sendable {
             // Log periodically
             sampleCount += samples.count
             if sampleCount % 16000 == 0 { // Log every ~1 second
-                Log.debug("MicCapture: received \(sampleCount) total samples, buffer: \(self.buffer.count)", category: .audio)
+                // Calculate RMS to see if we're getting actual audio
+                let rms = samples.isEmpty ? 0 : sqrt(samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count))
+                Log.info("MicCapture: \(sampleCount) total samples, buffer: \(self.buffer.count), lastRMS: \(String(format: "%.6f", rms))", category: .audio)
             }
 
             // Calculate audio level for metering

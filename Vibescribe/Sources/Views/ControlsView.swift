@@ -41,9 +41,10 @@ struct ControlsView: View {
                     }
 
                     StopButton {
-                        appState.stopRecording()
+                        appState.beginStopping()
                         Task {
                             await TranscriptionService.shared.stopRecording()
+                            appState.finalizeStopRecording()
                         }
                     }
 
@@ -54,9 +55,10 @@ struct ControlsView: View {
                     }
 
                     StopButton {
-                        appState.stopRecording()
+                        appState.beginStopping()
                         Task {
                             await TranscriptionService.shared.stopRecording()
+                            appState.finalizeStopRecording()
                         }
                     }
 

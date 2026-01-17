@@ -25,7 +25,7 @@ final class SettingsManager: @unchecked Sendable {
 
     private func registerDefaults() {
         defaults.register(defaults: [
-            SettingsKey.silenceDuration: 0.8,
+            SettingsKey.silenceDuration: 1.5,
             SettingsKey.silenceThreshold: 0.008,
             SettingsKey.alwaysOnTop: false,
             SettingsKey.bringToFrontOnHotkey: true

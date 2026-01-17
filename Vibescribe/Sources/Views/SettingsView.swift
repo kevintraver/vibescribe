@@ -4,7 +4,7 @@ import AppKit
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
-    @State private var silenceDuration: Double = 0.8
+    @State private var silenceDuration: Double = 1.5
     @State private var silenceThreshold: Double = 0.008
     @State private var alwaysOnTop: Bool = false
 
@@ -194,7 +194,7 @@ struct HotkeySettingsView: View {
                         if appState.bringToFrontOnHotkey {
                             NSApp.activate(ignoringOtherApps: true)
                         }
-                        appState.toggleRecording()
+                        await appState.handleHotkeyToggle()
                     }
                 }
                 hotkeyText = HotkeyManager.shared.formatHotkey(keyCode: keyCode, modifiers: modifiers)

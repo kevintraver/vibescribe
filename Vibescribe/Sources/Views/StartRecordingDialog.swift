@@ -155,7 +155,7 @@ struct StartRecordingDialog: View {
     }
 
     private var canStart: Bool {
-        appState.hasMicPermission || selectedAppBundleId != nil
+        appState.hasMicPermission || (selectedAppBundleId != nil && permissions.hasScreenPermission)
     }
 
     private func loadAudioDevices() async {
@@ -166,16 +166,16 @@ struct StartRecordingDialog: View {
         Log.info("loadRunningApps() called", category: .ui)
         isLoadingApps = true
 
-        // Check permission first
-        permissions.checkScreenPermission()
+        // Request permission (prompts on first use)
+        let status = permissions.requestScreenPermission()
+        appState.hasScreenPermission = permissions.hasScreenPermission
 
-        if permissions.hasScreenPermission {
-            appState.hasScreenPermission = true
+        if status == .granted {
             let apps = await AppListManager.shared.getRunningApps()
             Log.info("Loaded \(apps.count) running apps", category: .ui)
             runningApps = apps
         } else {
-            Log.warning("No screen permission, cannot list apps", category: .permissions)
+            Log.warning("No screen permission, cannot list apps (status: \(status))", category: .permissions)
             runningApps = []
         }
 

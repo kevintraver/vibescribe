@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SetupView: View {
     @Environment(AppState.self) private var appState
+    @State private var micPermissionStatus: PermissionsManager.PermissionStatus = .notDetermained
 
     var body: some View {
         VStack(spacing: 32) {
@@ -31,7 +32,8 @@ struct SetupView: View {
                     title: "Microphone Access",
                     description: "Required to transcribe your voice",
                     isComplete: appState.hasMicPermission,
-                    action: requestMicPermission
+                    action: requestMicPermission,
+                    micPermissionStatus: micPermissionStatus
                 )
 
                 // Model Download
@@ -73,6 +75,7 @@ struct SetupView: View {
         // Check mic permission (synchronous now)
         PermissionsManager.shared.checkMicPermission()
         let hasMic = PermissionsManager.shared.hasMicPermission
+        micPermissionStatus = PermissionsManager.shared.getMicPermissionStatus()
         Log.info("checkPermissions result: hasMic=\(hasMic)", category: .permissions)
         appState.hasMicPermission = hasMic
 
@@ -122,9 +125,10 @@ struct SetupView: View {
     private func requestMicPermission() {
         Log.info("requestMicPermission() button pressed", category: .permissions)
         Task {
-            let granted = await PermissionsManager.shared.requestMicPermission()
-            Log.info("requestMicPermission result: \(granted)", category: .permissions)
-            appState.hasMicPermission = granted
+            let status = await PermissionsManager.shared.requestMicPermission()
+            Log.info("requestMicPermission result: \(status)", category: .permissions)
+            micPermissionStatus = status
+            appState.hasMicPermission = (status == .granted)
         }
     }
 
@@ -168,6 +172,7 @@ struct SetupStepView: View {
     var isLoading: Bool = false
     var progress: Double = 0
     let action: () -> Void
+    var micPermissionStatus: PermissionsManager.PermissionStatus? = nil
 
     var body: some View {
         HStack(spacing: 16) {
@@ -196,9 +201,19 @@ struct SetupStepView: View {
                 Text(title)
                     .font(.headline)
 
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if micPermissionStatus == .denied {
+                    Text("Microphone access is denied. Please grant it in System Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if micPermissionStatus == .restricted {
+                    Text("Microphone access is restricted by your organization.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if isLoading && progress > 0 {
                     ProgressView(value: progress)
@@ -214,7 +229,13 @@ struct SetupStepView: View {
 
             // Action Button
             if !isComplete && !isLoading {
-                Button(action: action) {
+                Button(action: {
+                    if micPermissionStatus == .denied || micPermissionStatus == .restricted {
+                        PermissionsManager.shared.openMicrophoneSettings()
+                    } else {
+                        action()
+                    }
+                }) {
                     Text(buttonText)
                 }
                 .buttonStyle(.bordered)
@@ -224,6 +245,9 @@ struct SetupStepView: View {
 
     private var buttonText: String {
         if icon.contains("mic") {
+            if micPermissionStatus == .denied || micPermissionStatus == .restricted {
+                return "Open Settings"
+            }
             return "Grant Access"
         } else {
             return "Download"

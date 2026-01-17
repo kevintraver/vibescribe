@@ -1,9 +1,12 @@
 import SwiftUI
 import AVFoundation
+import AppKit
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var isCheckingSetup = true
+    @State private var windowObserver: WindowObserver?
+    @State private var window: NSWindow?
 
     var body: some View {
         Group {
@@ -16,6 +19,18 @@ struct ContentView: View {
             } else {
                 MainView()
             }
+        }
+        .background(
+            WindowAccessor { window in
+                if self.window !== window {
+                    self.window = window
+                    configureWindow(window)
+                    windowObserver = WindowObserver(window: window)
+                }
+            }
+        )
+        .onChange(of: appState.alwaysOnTop) { _, newValue in
+            updateWindowLevel(alwaysOnTop: newValue)
         }
         .task {
             // Connect AppState to TranscriptionService
@@ -75,6 +90,22 @@ struct ContentView: View {
 
         Log.info("checkInitialState() END - needsSetup: \(appState.needsSetup)", category: .general)
     }
+
+    private func configureWindow(_ window: NSWindow) {
+        if let frame = SettingsManager.shared.windowFrame {
+            window.setFrame(frame, display: true)
+        }
+        applyWindowLevel(window, alwaysOnTop: appState.alwaysOnTop)
+    }
+
+    private func updateWindowLevel(alwaysOnTop: Bool) {
+        guard let window else { return }
+        applyWindowLevel(window, alwaysOnTop: alwaysOnTop)
+    }
+
+    private func applyWindowLevel(_ window: NSWindow, alwaysOnTop: Bool) {
+        window.level = alwaysOnTop ? .floating : .normal
+    }
 }
 
 struct MainView: View {
@@ -108,19 +139,38 @@ struct MainView: View {
                 appState.dismissSessionWarning()
             }
             Button("Stop Recording", role: .destructive) {
-                appState.stopRecording()
+                appState.beginStopping()
                 Task {
                     await TranscriptionService.shared.stopRecording()
+                    appState.finalizeStopRecording()
                 }
             }
         } message: {
             Text("Your recording has been running for over 1 hour. Consider saving and starting a new session to prevent data loss.")
+        }
+        .alert("Permission Change Detected", isPresented: Binding(
+            get: { appState.showingPermissionAlert },
+            set: { _ in appState.dismissPermissionAlert() }
+        )) {
+            Button("OK") {
+                appState.dismissPermissionAlert()
+            }
+        } message: {
+            Text(appState.permissionAlertMessage ?? "Recording permissions changed.")
         }
         .sheet(isPresented: Binding(
             get: { appState.showingCrashRecovery },
             set: { _ in }
         )) {
             CrashRecoveryDialog()
+        }
+        .onExitCommand {
+            guard appState.recordingState.canStop else { return }
+            appState.beginStopping()
+            Task {
+                await TranscriptionService.shared.stopRecording()
+                appState.finalizeStopRecording()
+            }
         }
     }
 }
@@ -272,4 +322,55 @@ struct ToastView: View {
     ContentView()
         .environment(AppState())
         .frame(width: 600, height: 500)
+}
+
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                onWindow(window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window {
+                onWindow(window)
+            }
+        }
+    }
+}
+
+private final class WindowObserver {
+    private weak var window: NSWindow?
+
+    init(window: NSWindow) {
+        self.window = window
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidChangeFrame),
+            name: NSWindow.didMoveNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidChangeFrame),
+            name: NSWindow.didResizeNotification,
+            object: window
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func windowDidChangeFrame(_ notification: Notification) {
+        guard let window else { return }
+        SettingsManager.shared.windowFrame = window.frame
+    }
 }
