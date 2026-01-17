@@ -282,27 +282,31 @@ final class TranscriptionService: ObservableObject {
         let micCount = micBuffer.count
         let appCount = appBuffer.count
 
-        Log.info("processChunks #\(chunkTimerFireCount) - micBuffer: \(micCount), appBuffer: \(appCount), needed: \(chunkSamples)", category: .audio)
+        // Always log buffer state and line tracking
+        let lineState = currentLineIds.map { "\($0.key.displayLabel):\($0.value.uuidString.prefix(8))" }.joined(separator: ", ")
+        Log.info("processChunks #\(chunkTimerFireCount) - mic:\(micCount) app:\(appCount) need:\(chunkSamples) lines:[\(lineState)]", category: .audio)
 
         // Process mic and app audio independently (no echo suppression needed)
         // Mic is always "You", app audio uses diarization for speaker identification
         if micCount >= chunkSamples {
-            Log.debug("Processing mic chunk (\(micCount) samples)", category: .audio)
+            Log.info(">>> Processing mic chunk (\(micCount) samples)", category: .audio)
             await processMicChunk()
+        } else if micCount > 0 {
+            Log.debug("Mic buffer has \(micCount) samples, waiting for \(chunkSamples)", category: .audio)
         }
 
         if appCount >= chunkSamples {
-            Log.debug("Processing app chunk (\(appCount) samples)", category: .audio)
+            Log.info(">>> Processing app chunk (\(appCount) samples)", category: .audio)
             await processAppChunk()
         }
     }
 
     private func processMicChunk() async {
         let samples = micBuffer.flush()
-        Log.debug("processMicChunk - flushed \(samples.count) samples", category: .audio)
+        Log.info("processMicChunk - flushed \(samples.count) samples", category: .audio)
 
         guard !samples.isEmpty else {
-            Log.debug("processMicChunk - no samples", category: .audio)
+            Log.warning("processMicChunk - NO SAMPLES after flush!", category: .audio)
             return
         }
 
@@ -311,22 +315,26 @@ final class TranscriptionService: ObservableObject {
 
         // Check for silence
         if rms < silenceThreshold {
-            Log.debug("processMicChunk - silence (RMS: \(String(format: "%.4f", rms)))", category: .audio)
-            if let lastSpeech = lastSpeechTimes[speaker],
-               Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
-                currentLineIds[speaker] = nil
+            Log.info("processMicChunk - SILENCE (RMS: \(String(format: "%.4f", rms)) < threshold: \(String(format: "%.4f", silenceThreshold)))", category: .audio)
+            if let lastSpeech = lastSpeechTimes[speaker] {
+                let timeSinceLastSpeech = Date().timeIntervalSince(lastSpeech)
+                Log.debug("Time since last speech: \(String(format: "%.2f", timeSinceLastSpeech))s, silence duration: \(silenceDurationSeconds)s", category: .audio)
+                if timeSinceLastSpeech > silenceDurationSeconds {
+                    Log.info("Clearing You line due to silence timeout", category: .audio)
+                    currentLineIds[speaker] = nil
+                }
             }
             return
         }
 
         lastSpeechTimes[speaker] = Date()
-        Log.info("processMicChunk - speech detected (RMS: \(String(format: "%.4f", rms))), transcribing...", category: .transcription)
+        Log.info("processMicChunk - SPEECH detected (RMS: \(String(format: "%.4f", rms))), transcribing \(samples.count) samples...", category: .transcription)
 
         do {
             let result = try await provider.transcribe(samples, speaker: speaker)
 
-            guard !result.text.isEmpty else {
-                Log.debug("processMicChunk - transcription returned empty text", category: .transcription)
+            if result.text.isEmpty {
+                Log.warning("processMicChunk - transcription returned EMPTY text", category: .transcription)
                 return
             }
 
@@ -388,19 +396,31 @@ final class TranscriptionService: ObservableObject {
 
     /// Handle transcription result and update session
     private func handleTranscriptionResult(_ result: TranscriptionResult) async {
-        guard let appState, let session = appState.currentSession else {
-            Log.warning("handleTranscriptionResult - no current session", category: .transcription)
+        guard let appState else {
+            Log.error("handleTranscriptionResult - appState is nil!", category: .transcription)
+            return
+        }
+
+        guard let session = appState.currentSession else {
+            Log.error("handleTranscriptionResult - currentSession is nil!", category: .transcription)
             return
         }
 
         let speaker = result.speaker
         let currentLineId = currentLineIds[speaker]
 
+        // Track remote speakers for display logic
+        if case .remote(let speakerIndex) = speaker {
+            appState.recordRemoteSpeaker(speakerIndex)
+        }
+
+        Log.info("handleTranscriptionResult [\(appState.speakerDisplayLabel(for: speaker))] - currentLineId: \(currentLineId?.uuidString.prefix(8) ?? "nil"), session.lines: \(session.lines.count)", category: .transcription)
+
         if let lineId = currentLineId, let existingLine = session.findLine(byId: lineId) {
             // Append to existing line
             let newText = existingLine.text + " " + result.text
             session.updateLine(id: lineId, text: newText)
-            Log.debug("Updated line \(lineId): \"\(newText.suffix(50))\"", category: .transcription)
+            Log.info("UPDATED line \(lineId.uuidString.prefix(8)): \"\(newText.suffix(50))\"", category: .transcription)
 
             // Also update in database
             if var line = session.findLine(byId: lineId) {
@@ -415,13 +435,14 @@ final class TranscriptionService: ObservableObject {
                 timestamp: result.timestamp,
                 sessionId: session.id
             )
-            Log.debug("New line [\(speaker.displayLabel)]: \"\(result.text)\"", category: .transcription)
+            Log.info("NEW line [\(speaker.displayLabel)] id:\(newLine.id.uuidString.prefix(8)): \"\(result.text)\"", category: .transcription)
 
             // Track by ID for future appends
             currentLineIds[speaker] = newLine.id
 
-            // Save to database
+            // Save to database and session
             appState.addLine(newLine)
+            Log.info("After addLine - session.lines: \(session.lines.count)", category: .transcription)
         }
     }
 

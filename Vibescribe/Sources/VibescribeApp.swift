@@ -19,7 +19,13 @@ struct VibescribeApp: App {
         .windowStyle(.automatic)
         .defaultSize(width: 600, height: 500)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .newItem) {
+                Button("New Transcript") {
+                    appState.showingStartRecordingDialog = true
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(!appState.canStartRecording)
+            }
         }
 
         Settings {

@@ -192,6 +192,14 @@ struct StartRecordingDialog: View {
         appState.selectedMicId = selectedMicUid
         appState.selectedAppBundleId = selectedAppBundleId
 
+        // Set the app name for display in transcripts
+        if let bundleId = selectedAppBundleId,
+           let app = runningApps.first(where: { $0.bundleId == bundleId }) {
+            appState.selectedAppName = app.name
+        } else {
+            appState.selectedAppName = nil
+        }
+
         // Start the recording
         appState.startNewSession()
 

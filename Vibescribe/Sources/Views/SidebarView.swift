@@ -94,15 +94,17 @@ struct SidebarView: View {
         panel.allowedFileTypes = ["txt"]
         panel.canCreateDirectories = true
 
-        panel.begin { response in
+        panel.begin { [appState] response in
             guard response == .OK, let url = panel.url else { return }
 
             let text = session.lines
-                .map { "\($0.speaker.displayLabel): \($0.text)" }
+                .map { "\(appState.speakerDisplayLabel(for: $0.speaker)): \($0.text)" }
                 .joined(separator: "\n")
 
             if (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil {
-                appState.showToast("Exported transcript")
+                Task { @MainActor in
+                    appState.showToast("Exported transcript")
+                }
             }
         }
     }

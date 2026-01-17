@@ -45,6 +45,41 @@ final class AppState {
             SettingsManager.shared.lastAppBundleId = selectedAppBundleId
         }
     }
+    var selectedAppName: String?
+
+    /// Track unique remote speakers seen in current session (for display logic)
+    var seenRemoteSpeakers: Set<Int> = []
+
+    /// Get display label for a speaker, considering app name and multi-speaker context
+    func speakerDisplayLabel(for speaker: SpeakerID) -> String {
+        switch speaker {
+        case .you:
+            return "You"
+        case .remote(let speakerIndex):
+            // Get app name, falling back to bundle ID or extracting name from it
+            let appName: String
+            if let name = selectedAppName, !name.isEmpty {
+                appName = name
+            } else if let bundleId = selectedAppBundleId {
+                // Extract app name from bundle ID (e.g., "com.apple.Music" -> "Music")
+                appName = bundleId.components(separatedBy: ".").last ?? bundleId
+            } else {
+                appName = "App"
+            }
+
+            // If we've seen multiple speakers, show speaker number
+            if seenRemoteSpeakers.count > 1 {
+                return "\(appName) (Speaker \(speakerIndex + 1))"
+            } else {
+                return appName
+            }
+        }
+    }
+
+    /// Record that we've seen a remote speaker (call when transcription comes in)
+    func recordRemoteSpeaker(_ speakerIndex: Int) {
+        seenRemoteSpeakers.insert(speakerIndex)
+    }
 
     // MARK: - Settings
 
@@ -111,6 +146,9 @@ final class AppState {
         currentSession = session
         recordingState = .recording
         selectedSessionId = session.id
+
+        // Reset speaker tracking for new session
+        seenRemoteSpeakers.removeAll()
 
         // Persist session immediately
         DatabaseManager.shared.saveSession(session)

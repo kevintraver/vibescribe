@@ -109,6 +109,7 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
 }
 
 struct TranscriptLineView: View {
+    @Environment(AppState.self) private var appState
     let line: TranscriptLine
     let isSelected: Bool
     let onCopy: () -> Void
@@ -116,24 +117,30 @@ struct TranscriptLineView: View {
 
     @State private var isHovered = false
 
+    private var speakerLabel: String {
+        appState.speakerDisplayLabel(for: line.speaker)
+    }
+
     private var labelWidth: CGFloat {
-        // Remote speakers need more space (e.g., "Remote 1:")
-        switch line.speaker {
-        case .you:
+        // Dynamic width based on label length
+        let label = speakerLabel
+        if label.count <= 4 {
             return 50
-        case .remote:
-            return 80
+        } else if label.count <= 12 {
+            return 100
+        } else {
+            return 150
         }
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Speaker Label with color
-            Text(line.speaker.displayLabel + ":")
+            Text(speakerLabel + ":")
                 .font(.system(.body, design: .monospaced))
                 .fontWeight(.semibold)
                 .foregroundStyle(line.speaker.color)
-                .frame(width: labelWidth, alignment: .trailing)
+                .frame(minWidth: labelWidth, alignment: .trailing)
 
             // Text Content
             Text(line.text)
