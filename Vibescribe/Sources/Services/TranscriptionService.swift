@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Main service that orchestrates audio capture and transcription
@@ -10,7 +11,7 @@ final class TranscriptionService: ObservableObject {
 
     private let sampleRate: Double = 16000
     private let chunkDurationSeconds: TimeInterval = 1.5
-    private var silenceDurationSeconds: TimeInterval = 0.8
+    private var silenceDurationSeconds: TimeInterval = 1.5
     private var silenceThreshold: Float = 0.008
 
     private var chunkSamples: Int {
@@ -21,10 +22,12 @@ final class TranscriptionService: ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var isPaused = false
+    @Published private(set) var isDiarizerReady = false
 
     // MARK: - Components
 
     private let provider: FluidAudioProvider
+    private let diarizer = AppAudioDiarizer()
     private let micBuffer = ThreadSafeAudioBuffer()
     private let appBuffer = ThreadSafeAudioBuffer()
     private var micCapture: MicCapture?
@@ -35,12 +38,10 @@ final class TranscriptionService: ObservableObject {
 
     private weak var appState: AppState?
 
-    // MARK: - Line Management
+    // MARK: - Line Management (per speaker)
 
-    private var currentMicLine: TranscriptLine?
-    private var currentAppLine: TranscriptLine?
-    private var lastMicSpeechTime: Date?
-    private var lastAppSpeechTime: Date?
+    private var currentLineIds: [SpeakerID: UUID] = [:]
+    private var lastSpeechTimes: [SpeakerID: Date] = [:]
 
     // MARK: - Initialization
 
@@ -74,6 +75,19 @@ final class TranscriptionService: ObservableObject {
     /// Prepare the transcription provider (download/load models)
     func prepare(progressHandler: ((Double) -> Void)? = nil) async throws {
         try await provider.prepare(progressHandler: progressHandler)
+
+        // Initialize diarizer in background (non-blocking)
+        Task {
+            do {
+                try await diarizer.initialize()
+                await MainActor.run {
+                    self.isDiarizerReady = true
+                }
+                Log.info("Diarizer initialized successfully", category: .transcription)
+            } catch {
+                Log.warning("Diarizer initialization failed (will use fallback): \(error)", category: .transcription)
+            }
+        }
     }
 
     /// Clear model cache
@@ -103,21 +117,31 @@ final class TranscriptionService: ObservableObject {
         appBuffer.clear()
         Log.debug("Buffers cleared", category: .audio)
 
-        // Reset line state
-        currentMicLine = nil
-        currentAppLine = nil
-        lastMicSpeechTime = nil
-        lastAppSpeechTime = nil
+        // Reset line state (per speaker tracking)
+        currentLineIds.removeAll()
+        lastSpeechTimes.removeAll()
 
-        // Start mic capture
-        Log.info("Starting mic capture...", category: .audio)
-        let mic = MicCapture(buffer: micBuffer)
-        do {
-            try mic.start(deviceId: micId)
-            micCapture = mic
-            Log.info("Mic capture started successfully", category: .audio)
-        } catch {
-            Log.error("Failed to start mic capture: \(error)", category: .audio)
+        // Reset diarizer state for new recording
+        Task {
+            await diarizer.reset()
+        }
+
+        // Start mic capture (check actual permission status, not cached)
+        let micPermissionGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        Log.info("Mic permission check: \(micPermissionGranted)", category: .audio)
+
+        if micPermissionGranted {
+            Log.info("Starting mic capture...", category: .audio)
+            let mic = MicCapture(buffer: micBuffer)
+            do {
+                try mic.start(deviceId: micId)
+                micCapture = mic
+                Log.info("Mic capture started successfully", category: .audio)
+            } catch {
+                Log.error("Failed to start mic capture: \(error)", category: .audio)
+            }
+        } else {
+            Log.warning("Mic permission not granted, skipping mic capture", category: .audio)
         }
 
         // Start app capture if specified
@@ -137,6 +161,22 @@ final class TranscriptionService: ObservableObject {
         Log.info("Starting chunk timer (interval: \(chunkDurationSeconds)s)", category: .audio)
         startChunkTimer()
 
+        PermissionsManager.shared.startMonitoringPermissions { [self] revoked in
+            switch revoked {
+            case .microphone:
+                appState?.hasMicPermission = false
+                appState?.showPermissionAlert("Microphone permission was revoked. Recording paused.")
+                appState?.pauseRecording()
+                pauseRecording()
+            case .screenRecording:
+                appState?.hasScreenPermission = false
+                appState?.showPermissionAlert("Screen recording permission was revoked. App audio capture paused.")
+                Task { @MainActor in
+                    await stopAppCapture()
+                }
+            }
+        }
+
         isRecording = true
         isPaused = false
         Log.info("Recording started!", category: .audio)
@@ -151,6 +191,7 @@ final class TranscriptionService: ObservableObject {
         }
 
         micCapture?.pause()
+        appCapture?.pause()
         stopChunkTimer()
 
         // Clear buffers (discard audio during pause)
@@ -176,6 +217,7 @@ final class TranscriptionService: ObservableObject {
             Log.error("Failed to resume mic capture: \(error)", category: .audio)
         }
 
+        appCapture?.resume()
         startChunkTimer()
         isPaused = false
         Log.info("Recording resumed", category: .audio)
@@ -199,11 +241,23 @@ final class TranscriptionService: ObservableObject {
 
         isRecording = false
         isPaused = false
+
+        PermissionsManager.shared.stopMonitoringPermissions()
+    }
+
+    /// Stop app audio capture without ending the session
+    func stopAppCapture() async {
+        await appCapture?.stop()
+        appCapture = nil
     }
 
     // MARK: - Chunk Processing
 
+    private var chunkTimerFireCount = 0
+
     private func startChunkTimer() {
+        chunkTimerFireCount = 0
+        Log.info("Starting chunk timer with interval \(chunkDurationSeconds)s, chunkSamples needed: \(chunkSamples)", category: .audio)
         chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDurationSeconds, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.processChunks()
@@ -212,36 +266,34 @@ final class TranscriptionService: ObservableObject {
     }
 
     private func stopChunkTimer() {
+        Log.info("Stopping chunk timer after \(chunkTimerFireCount) fires", category: .audio)
         chunkTimer?.invalidate()
         chunkTimer = nil
     }
 
     /// Process accumulated audio chunks
     private func processChunks() async {
-        guard !isPaused else { return }
+        guard !isPaused else {
+            Log.debug("processChunks - skipped (paused)", category: .audio)
+            return
+        }
 
+        chunkTimerFireCount += 1
         let micCount = micBuffer.count
         let appCount = appBuffer.count
 
-        Log.debug("processChunks - micBuffer: \(micCount), appBuffer: \(appCount), needed: \(chunkSamples)", category: .audio)
+        Log.info("processChunks #\(chunkTimerFireCount) - micBuffer: \(micCount), appBuffer: \(appCount), needed: \(chunkSamples)", category: .audio)
 
-        // Process mic and app audio in parallel
-        await withTaskGroup(of: Void.self) { group in
-            // Process mic audio
-            if micCount >= chunkSamples {
-                Log.debug("Processing mic chunk (\(micCount) samples)", category: .audio)
-                group.addTask { @MainActor in
-                    await self.processMicChunk()
-                }
-            }
+        // Process mic and app audio independently (no echo suppression needed)
+        // Mic is always "You", app audio uses diarization for speaker identification
+        if micCount >= chunkSamples {
+            Log.debug("Processing mic chunk (\(micCount) samples)", category: .audio)
+            await processMicChunk()
+        }
 
-            // Process app audio
-            if appCount >= chunkSamples {
-                Log.debug("Processing app chunk (\(appCount) samples)", category: .audio)
-                group.addTask { @MainActor in
-                    await self.processAppChunk()
-                }
-            }
+        if appCount >= chunkSamples {
+            Log.debug("Processing app chunk (\(appCount) samples)", category: .audio)
+            await processAppChunk()
         }
     }
 
@@ -254,30 +306,32 @@ final class TranscriptionService: ObservableObject {
             return
         }
 
-        // Check for silence (simple RMS threshold)
-        if isSilence(samples) {
-            Log.debug("processMicChunk - silence detected", category: .audio)
-            // Check if we should start a new line after silence
-            if let lastSpeech = lastMicSpeechTime,
+        let speaker: SpeakerID = .you
+        let rms = calculateRMS(samples)
+
+        // Check for silence
+        if rms < silenceThreshold {
+            Log.debug("processMicChunk - silence (RMS: \(String(format: "%.4f", rms)))", category: .audio)
+            if let lastSpeech = lastSpeechTimes[speaker],
                Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
-                currentMicLine = nil
+                currentLineIds[speaker] = nil
             }
             return
         }
 
-        lastMicSpeechTime = Date()
-        Log.info("processMicChunk - speech detected, transcribing \(samples.count) samples...", category: .transcription)
+        lastSpeechTimes[speaker] = Date()
+        Log.info("processMicChunk - speech detected (RMS: \(String(format: "%.4f", rms))), transcribing...", category: .transcription)
 
         do {
-            let result = try await provider.transcribe(samples, source: .you)
+            let result = try await provider.transcribe(samples, speaker: speaker)
 
             guard !result.text.isEmpty else {
                 Log.debug("processMicChunk - transcription returned empty text", category: .transcription)
                 return
             }
 
-            Log.info("Transcribed: \"\(result.text)\"", category: .transcription)
-            await handleTranscriptionResult(result, source: .you)
+            Log.info("Transcribed [You]: \"\(result.text)\"", category: .transcription)
+            await handleTranscriptionResult(result)
         } catch {
             Log.error("Mic transcription error: \(error)", category: .transcription)
         }
@@ -287,59 +341,87 @@ final class TranscriptionService: ObservableObject {
         let samples = appBuffer.flush()
         guard !samples.isEmpty else { return }
 
-        if isSilence(samples) {
-            if let lastSpeech = lastAppSpeechTime,
-               Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
-                currentAppLine = nil
+        let rms = calculateRMS(samples)
+
+        if rms < silenceThreshold {
+            Log.debug("processAppChunk - silence (RMS: \(String(format: "%.4f", rms)))", category: .audio)
+            // Check all remote speakers for silence timeout
+            for speakerIndex in 0..<4 {
+                let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+                if let lastSpeech = lastSpeechTimes[speaker],
+                   Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
+                    currentLineIds[speaker] = nil
+                }
             }
             return
         }
 
-        lastAppSpeechTime = Date()
+        // Determine speaker using diarization (or fallback to speaker 0)
+        var speakerIndex = 0
+        if await diarizer.isReady {
+            do {
+                if let detectedSpeaker = try await diarizer.getDominantSpeaker(samples: samples) {
+                    speakerIndex = detectedSpeaker
+                    Log.debug("Diarizer detected speaker \(speakerIndex)", category: .transcription)
+                }
+            } catch {
+                Log.warning("Diarization failed, using fallback: \(error)", category: .transcription)
+            }
+        }
+
+        let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+        lastSpeechTimes[speaker] = Date()
+
+        Log.info("processAppChunk - speech detected (RMS: \(String(format: "%.4f", rms))), speaker: \(speaker.displayLabel)", category: .transcription)
 
         do {
-            let result = try await provider.transcribe(samples, source: .remote)
+            let result = try await provider.transcribe(samples, speaker: speaker)
 
             guard !result.text.isEmpty else { return }
 
-            await handleTranscriptionResult(result, source: .remote)
+            Log.info("Transcribed [\(speaker.displayLabel)]: \"\(result.text)\"", category: .transcription)
+            await handleTranscriptionResult(result)
         } catch {
-            print("App transcription error: \(error)")
+            Log.error("App transcription error: \(error)", category: .transcription)
         }
     }
 
     /// Handle transcription result and update session
-    private func handleTranscriptionResult(_ result: TranscriptionResult, source: TranscriptSource) async {
-        guard let session = appState?.currentSession else { return }
+    private func handleTranscriptionResult(_ result: TranscriptionResult) async {
+        guard let appState, let session = appState.currentSession else {
+            Log.warning("handleTranscriptionResult - no current session", category: .transcription)
+            return
+        }
 
-        let currentLine = source == .you ? currentMicLine : currentAppLine
+        let speaker = result.speaker
+        let currentLineId = currentLineIds[speaker]
 
-        if let line = currentLine {
+        if let lineId = currentLineId, let existingLine = session.findLine(byId: lineId) {
             // Append to existing line
-            let newText = line.text + " " + result.text
-            session.updateLastLine(with: newText, for: source)
+            let newText = existingLine.text + " " + result.text
+            session.updateLine(id: lineId, text: newText)
+            Log.debug("Updated line \(lineId): \"\(newText.suffix(50))\"", category: .transcription)
 
-            // Update our reference
-            if source == .you {
-                currentMicLine?.text = newText
-            } else {
-                currentAppLine?.text = newText
+            // Also update in database
+            if var line = session.findLine(byId: lineId) {
+                line.text = newText
+                appState.updateLine(line)
             }
         } else {
             // Create new line
             let newLine = TranscriptLine(
                 text: result.text,
-                source: source,
+                speaker: speaker,
                 timestamp: result.timestamp,
                 sessionId: session.id
             )
-            session.addLine(newLine)
+            Log.debug("New line [\(speaker.displayLabel)]: \"\(result.text)\"", category: .transcription)
 
-            if source == .you {
-                currentMicLine = newLine
-            } else {
-                currentAppLine = newLine
-            }
+            // Track by ID for future appends
+            currentLineIds[speaker] = newLine.id
+
+            // Save to database
+            appState.addLine(newLine)
         }
     }
 
@@ -349,38 +431,50 @@ final class TranscriptionService: ObservableObject {
         let micSamples = micBuffer.flush()
         if !micSamples.isEmpty && !isSilence(micSamples) {
             do {
-                let result = try await provider.transcribe(micSamples, source: .you)
+                let result = try await provider.transcribe(micSamples, speaker: .you)
                 if !result.text.isEmpty {
-                    await handleTranscriptionResult(result, source: .you)
+                    await handleTranscriptionResult(result)
                 }
             } catch {
-                print("Final mic transcription error: \(error)")
+                Log.error("Final mic transcription error: \(error)", category: .transcription)
             }
         }
 
-        // Process app
+        // Process app (use last known speaker or default to speaker 0)
         let appSamples = appBuffer.flush()
         if !appSamples.isEmpty && !isSilence(appSamples) {
+            var speakerIndex = 0
+            if await diarizer.isReady {
+                if let currentSpeaker = await diarizer.getCurrentSpeaker() {
+                    speakerIndex = currentSpeaker
+                }
+            }
+            let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+
             do {
-                let result = try await provider.transcribe(appSamples, source: .remote)
+                let result = try await provider.transcribe(appSamples, speaker: speaker)
                 if !result.text.isEmpty {
-                    await handleTranscriptionResult(result, source: .remote)
+                    await handleTranscriptionResult(result)
                 }
             } catch {
-                print("Final app transcription error: \(error)")
+                Log.error("Final app transcription error: \(error)", category: .transcription)
             }
         }
     }
 
     // MARK: - Helpers
 
+    /// Calculate RMS (root mean square) of audio samples
+    private func calculateRMS(_ samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        let sumOfSquares = samples.reduce(0) { $0 + $1 * $1 }
+        return sqrt(sumOfSquares / Float(samples.count))
+    }
+
     /// Simple silence detection using RMS threshold
     /// Note: 0.008 works well for typical room noise; speech is usually 0.01-0.05+
     private func isSilence(_ samples: [Float]) -> Bool {
-        guard !samples.isEmpty else { return true }
-
-        let sumOfSquares = samples.reduce(0) { $0 + $1 * $1 }
-        let rms = sqrt(sumOfSquares / Float(samples.count))
+        let rms = calculateRMS(samples)
         let isSilent = rms < silenceThreshold
         Log.debug("RMS: \(String(format: "%.6f", rms)), threshold: \(silenceThreshold), silent: \(isSilent)", category: .audio)
         return isSilent

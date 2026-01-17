@@ -65,13 +65,13 @@ final class DatabaseManager: @unchecked Sendable {
             )
         """)
 
-        // Transcript lines table
+        // Transcript lines table with speaker as JSON
         execute("""
             CREATE TABLE IF NOT EXISTS transcript_lines (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 text TEXT NOT NULL,
-                source TEXT NOT NULL,
+                speaker TEXT NOT NULL,
                 timestamp REAL NOT NULL,
                 created_at REAL NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -82,6 +82,47 @@ final class DatabaseManager: @unchecked Sendable {
         execute("CREATE INDEX IF NOT EXISTS idx_lines_session ON transcript_lines(session_id)")
         execute("CREATE INDEX IF NOT EXISTS idx_lines_timestamp ON transcript_lines(timestamp)")
         execute("CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC)")
+
+        // Run migration for existing data
+        migrateSourceToSpeaker()
+    }
+
+    /// Migrate existing 'source' column data to new 'speaker' JSON format
+    private func migrateSourceToSpeaker() {
+        // Check if we have old 'source' column data to migrate
+        // The column was renamed from 'source' to 'speaker' but we need to handle legacy data
+        var needsMigration = false
+
+        let checkSql = "SELECT speaker FROM transcript_lines LIMIT 1"
+        var statement: OpaquePointer?
+        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                if let speakerStr = sqlite3_column_text(statement, 0) {
+                    let value = String(cString: speakerStr)
+                    // Check if it's old format ("you" or "remote") vs new JSON format
+                    needsMigration = value == "you" || value == "remote"
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        guard needsMigration else { return }
+
+        Log.info("Migrating speaker data from legacy format...", category: .database)
+
+        // Update "you" -> JSON encoded SpeakerID.you
+        let updateYou = """
+            UPDATE transcript_lines SET speaker = '{"you":{}}' WHERE speaker = 'you'
+        """
+        execute(updateYou)
+
+        // Update "remote" -> JSON encoded SpeakerID.remote(speakerIndex: 0)
+        let updateRemote = """
+            UPDATE transcript_lines SET speaker = '{"remote":{"speakerIndex":0}}' WHERE speaker = 'remote'
+        """
+        execute(updateRemote)
+
+        Log.info("Speaker data migration complete", category: .database)
     }
 
     // MARK: - Session Operations
@@ -122,16 +163,19 @@ final class DatabaseManager: @unchecked Sendable {
             guard let self, let db = self.db else { return }
 
             let sql = """
-                INSERT OR REPLACE INTO transcript_lines (id, session_id, text, source, timestamp, created_at)
+                INSERT OR REPLACE INTO transcript_lines (id, session_id, text, speaker, timestamp, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
             """
+
+            // Encode speaker as JSON
+            let speakerJson = self.encodeSpeaker(line.speaker)
 
             var statement: OpaquePointer?
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, line.id.uuidString, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(statement, 2, line.sessionId.uuidString, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(statement, 3, line.text, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(statement, 4, line.source.rawValue, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 4, speakerJson, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_double(statement, 5, line.timestamp.timeIntervalSince1970)
                 sqlite3_bind_double(statement, 6, Date().timeIntervalSince1970)
 
@@ -414,26 +458,75 @@ final class DatabaseManager: @unchecked Sendable {
         guard let idStr = sqlite3_column_text(statement, 0),
               let sessionIdStr = sqlite3_column_text(statement, 1),
               let textStr = sqlite3_column_text(statement, 2),
-              let sourceStr = sqlite3_column_text(statement, 3) else {
+              let speakerStr = sqlite3_column_text(statement, 3) else {
             return nil
         }
 
         guard let id = UUID(uuidString: String(cString: idStr)),
-              let sessionId = UUID(uuidString: String(cString: sessionIdStr)),
-              let source = TranscriptSource(rawValue: String(cString: sourceStr)) else {
+              let sessionId = UUID(uuidString: String(cString: sessionIdStr)) else {
             return nil
         }
 
         let text = String(cString: textStr)
+        let speakerJson = String(cString: speakerStr)
+        let speaker = decodeSpeaker(speakerJson)
         let timestamp = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
 
         return TranscriptLine(
             id: id,
             text: text,
-            source: source,
+            speaker: speaker,
             timestamp: timestamp,
             sessionId: sessionId
         )
+    }
+
+    // MARK: - Speaker Encoding/Decoding
+
+    private func encodeSpeaker(_ speaker: SpeakerID) -> String {
+        switch speaker {
+        case .you:
+            return "{\"you\":{}}"
+        case .remote(let speakerIndex):
+            return "{\"remote\":{\"speakerIndex\":\(speakerIndex)}}"
+        }
+    }
+
+    private func decodeSpeaker(_ json: String) -> SpeakerID {
+        // Handle legacy format
+        if json == "you" {
+            return .you
+        }
+        if json == "remote" {
+            return .remote(speakerIndex: 0)
+        }
+
+        // Parse JSON format
+        guard let data = json.data(using: .utf8) else {
+            return .you
+        }
+
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(SpeakerID.self, from: data)
+        } catch {
+            // Fallback: try to detect from JSON structure
+            if json.contains("\"you\"") {
+                return .you
+            }
+            if json.contains("\"remote\"") {
+                // Extract speaker index if present
+                if let range = json.range(of: "\"speakerIndex\":"),
+                   let endRange = json[range.upperBound...].firstIndex(of: "}") {
+                    let indexStr = json[range.upperBound..<endRange].trimmingCharacters(in: .whitespaces)
+                    if let index = Int(indexStr) {
+                        return .remote(speakerIndex: index)
+                    }
+                }
+                return .remote(speakerIndex: 0)
+            }
+            return .you
+        }
     }
 
     private func execute(_ sql: String) {

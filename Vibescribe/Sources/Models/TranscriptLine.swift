@@ -4,20 +4,20 @@ import Foundation
 struct TranscriptLine: Identifiable, Codable, Sendable {
     let id: UUID
     var text: String
-    let source: TranscriptSource
+    let speaker: SpeakerID
     let timestamp: Date
     let sessionId: UUID
 
     init(
         id: UUID = UUID(),
         text: String,
-        source: TranscriptSource,
+        speaker: SpeakerID,
         timestamp: Date = Date(),
         sessionId: UUID
     ) {
         self.id = id
         self.text = text
-        self.source = source
+        self.speaker = speaker
         self.timestamp = timestamp
         self.sessionId = sessionId
     }

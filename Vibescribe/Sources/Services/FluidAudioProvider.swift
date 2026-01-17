@@ -24,7 +24,7 @@ final class FluidAudioProvider: @unchecked Sendable {
             return
         }
 
-        progressHandler?(0.1)
+        progressHandler?(0.0)
         Log.info("Starting model download/load...", category: .transcription)
 
         // Download and load models
@@ -33,7 +33,7 @@ final class FluidAudioProvider: @unchecked Sendable {
             let downloadedModels = try await AsrModels.downloadAndLoad(version: .v3)
             Log.info("Model download complete!", category: .transcription)
 
-            progressHandler?(0.6)
+            progressHandler?(0.5)
 
             // Initialize ASR manager
             Log.info("Initializing ASR manager...", category: .transcription)
@@ -53,7 +53,7 @@ final class FluidAudioProvider: @unchecked Sendable {
         }
     }
 
-    func transcribe(_ samples: [Float], source: TranscriptSource) async throws -> TranscriptionResult {
+    func transcribe(_ samples: [Float], speaker: SpeakerID) async throws -> TranscriptionResult {
         guard let manager = asrManager else {
             Log.error("transcribe called but manager is nil!", category: .transcription)
             throw TranscriptionError.notReady
@@ -61,13 +61,13 @@ final class FluidAudioProvider: @unchecked Sendable {
 
         guard !samples.isEmpty else {
             Log.debug("transcribe called with empty samples", category: .transcription)
-            return TranscriptionResult(text: "", confidence: 0, source: source)
+            return TranscriptionResult(text: "", confidence: 0, speaker: speaker)
         }
 
-        Log.debug("Transcribing \(samples.count) samples from \(source.rawValue)...", category: .transcription)
+        Log.debug("Transcribing \(samples.count) samples for \(speaker.displayLabel)...", category: .transcription)
 
-        // Map our TranscriptSource to FluidAudio's AudioSource
-        let fluidSource: AudioSource = source == .you ? .microphone : .system
+        // Map our SpeakerID to FluidAudio's AudioSource
+        let fluidSource: AudioSource = speaker.isYou ? .microphone : .system
         let result = try await manager.transcribe(samples, source: fluidSource)
 
         Log.debug("Transcription result: \"\(result.text)\" (confidence: \(result.confidence))", category: .transcription)
@@ -75,7 +75,7 @@ final class FluidAudioProvider: @unchecked Sendable {
         return TranscriptionResult(
             text: result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
             confidence: result.confidence,
-            source: source
+            speaker: speaker
         )
     }
 

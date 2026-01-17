@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SidebarView: View {
     @Environment(AppState.self) private var appState
@@ -15,6 +16,13 @@ struct SidebarView: View {
                 Section("Current") {
                     SessionRowView(session: current, isActive: true)
                         .tag(current.id)
+                        .contextMenu {
+                            Button {
+                                exportSession(current)
+                            } label: {
+                                Label("Export", systemImage: "square.and.arrow.up")
+                            }
+                        }
                 }
             }
 
@@ -25,6 +33,12 @@ struct SidebarView: View {
                         SessionRowView(session: session, isActive: false)
                             .tag(session.id)
                             .contextMenu {
+                                Button {
+                                    exportSession(session)
+                                } label: {
+                                    Label("Export", systemImage: "square.and.arrow.up")
+                                }
+
                                 Button(role: .destructive) {
                                     sessionToDelete = session
                                     showDeleteConfirmation = true
@@ -34,6 +48,14 @@ struct SidebarView: View {
                             }
                     }
                     .onDelete(perform: deleteSessions)
+                }
+            }
+
+            if appState.sessions.count < DatabaseManager.shared.getSessionCount() {
+                Section {
+                    Button("Load more") {
+                        appState.loadMoreSessions()
+                    }
                 }
             }
         }
@@ -63,18 +85,71 @@ struct SidebarView: View {
             appState.deleteSession(session)
         }
     }
+
+    private func exportSession(_ session: Session) {
+        let panel = NSSavePanel()
+        let baseName = session.name.isEmpty ? session.formattedDate : session.name
+        let safeName = baseName.replacingOccurrences(of: ":", with: ".")
+        panel.nameFieldStringValue = "\(safeName).txt"
+        panel.allowedFileTypes = ["txt"]
+        panel.canCreateDirectories = true
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            let text = session.lines
+                .map { "\($0.speaker.displayLabel): \($0.text)" }
+                .joined(separator: "\n")
+
+            if (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil {
+                appState.showToast("Exported transcript")
+            }
+        }
+    }
 }
 
 struct SessionRowView: View {
     let session: Session
     let isActive: Bool
+    @State private var isEditingName = false
+    @FocusState private var isNameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(session.name)
+                if isEditingName {
+                    TextField("Session name", text: Binding(
+                        get: { session.name },
+                        set: { session.name = $0 }
+                    ))
                     .font(.headline)
-                    .lineLimit(1)
+                    .focused($isNameFocused)
+                    .onSubmit { finishEditingName() }
+                    .onAppear { isNameFocused = true }
+                    .onChange(of: isNameFocused) { _, newValue in
+                        if !newValue {
+                            finishEditingName()
+                        }
+                    }
+                } else {
+                    if session.name.isEmpty {
+                        TimelineView(.periodic(from: .now, by: 60)) { _ in
+                            Text(session.relativeTimeString)
+                                .font(.headline)
+                                .lineLimit(1)
+                        }
+                        .onTapGesture {
+                            isEditingName = true
+                        }
+                    } else {
+                        Text(session.name)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .onTapGesture {
+                                isEditingName = true
+                            }
+                    }
+                }
 
                 Spacer()
 
@@ -88,13 +163,18 @@ struct SessionRowView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
-            if !isActive {
+            if !isActive && !session.name.isEmpty {
                 Text(session.relativeTimeString)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func finishEditingName() {
+        isEditingName = false
+        DatabaseManager.shared.saveSession(session)
     }
 }
 

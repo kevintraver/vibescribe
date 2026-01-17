@@ -6,6 +6,7 @@ struct TranscriptView: View {
     @State private var selectedLines: Set<UUID> = []
     @State private var isAutoScrollEnabled = true
     @State private var scrollProxy: ScrollViewProxy?
+    @State private var scrollViewHeight: CGFloat = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -20,9 +21,37 @@ struct TranscriptView: View {
                         )
                         .id(line.id)
                     }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: TranscriptBottomOffsetKey.self,
+                                    value: geo.frame(in: .named("transcriptScroll")).maxY
+                                )
+                            }
+                        )
                 }
                 .padding()
             }
+            .coordinateSpace(name: "transcriptScroll")
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { scrollViewHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, newValue in
+                            scrollViewHeight = newValue
+                        }
+                }
+            )
+            .background(
+                Button("Copy Selected") {
+                    copySelectedLines()
+                }
+                .keyboardShortcut("c", modifiers: .command)
+                .opacity(0)
+            )
             .onAppear {
                 scrollProxy = proxy
             }
@@ -32,6 +61,10 @@ struct TranscriptView: View {
                         proxy.scrollTo(lastLine.id, anchor: .bottom)
                     }
                 }
+            }
+            .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
+                let distanceToBottom = bottomOffset - scrollViewHeight
+                isAutoScrollEnabled = distanceToBottom <= 50
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -55,6 +88,24 @@ struct TranscriptView: View {
         appState.showToast("Copied to clipboard")
     }
 
+    private func copySelectedLines() {
+        let linesToCopy = session.lines.filter { selectedLines.contains($0.id) }
+        guard !linesToCopy.isEmpty else { return }
+
+        let text = linesToCopy.map(\.text).joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        appState.showToast("Copied \(linesToCopy.count) line\(linesToCopy.count == 1 ? "" : "s")")
+    }
+
+}
+
+private struct TranscriptBottomOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 struct TranscriptLineView: View {
@@ -65,14 +116,24 @@ struct TranscriptLineView: View {
 
     @State private var isHovered = false
 
+    private var labelWidth: CGFloat {
+        // Remote speakers need more space (e.g., "Remote 1:")
+        switch line.speaker {
+        case .you:
+            return 50
+        case .remote:
+            return 80
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            // Source Label
-            Text(line.source.displayLabel + ":")
+            // Speaker Label with color
+            Text(line.speaker.displayLabel + ":")
                 .font(.system(.body, design: .monospaced))
                 .fontWeight(.semibold)
-                .foregroundStyle(line.source == .you ? .blue : .green)
-                .frame(width: 60, alignment: .trailing)
+                .foregroundStyle(line.speaker.color)
+                .frame(width: labelWidth, alignment: .trailing)
 
             // Text Content
             Text(line.text)
@@ -92,23 +153,19 @@ struct TranscriptLineView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
-        )
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onTapGesture(perform: onSelect)
     }
 }
 
 #Preview {
     let session = Session()
     session.lines = [
-        TranscriptLine(text: "Hey, how's the project going?", source: .you, sessionId: session.id),
-        TranscriptLine(text: "It's going well! Just finished the main feature.", source: .remote, sessionId: session.id),
-        TranscriptLine(text: "That's great to hear. Any blockers?", source: .you, sessionId: session.id),
-        TranscriptLine(text: "Not really, just need to write some tests and we should be good.", source: .remote, sessionId: session.id)
+        TranscriptLine(text: "Hey, how's the project going?", speaker: .you, sessionId: session.id),
+        TranscriptLine(text: "It's going well! Just finished the main feature.", speaker: .remote(speakerIndex: 0), sessionId: session.id),
+        TranscriptLine(text: "That's great to hear. Any blockers?", speaker: .you, sessionId: session.id),
+        TranscriptLine(text: "Not really, just need to write some tests.", speaker: .remote(speakerIndex: 0), sessionId: session.id),
+        TranscriptLine(text: "I have a different approach to suggest.", speaker: .remote(speakerIndex: 1), sessionId: session.id)
     ]
 
     return TranscriptView(session: session)

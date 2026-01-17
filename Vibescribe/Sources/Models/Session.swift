@@ -27,6 +27,10 @@ final class Session: Identifiable {
         return String(text.prefix(47)) + "..."
     }
 
+    var displayName: String {
+        name.isEmpty ? relativeTimeString : name
+    }
+
     var formattedDuration: String {
         let totalSeconds = Int(duration)
         let hours = totalSeconds / 3600
@@ -68,19 +72,31 @@ final class Session: Identifiable {
     }
 
     private static func defaultName(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        ""
     }
 
+    /// Add a line in timestamp-sorted order
     func addLine(_ line: TranscriptLine) {
-        lines.append(line)
+        // Find the correct insertion point based on timestamp
+        let insertIndex = lines.firstIndex { $0.timestamp > line.timestamp } ?? lines.endIndex
+        lines.insert(line, at: insertIndex)
     }
 
-    func updateLastLine(with text: String, for source: TranscriptSource) {
-        guard let lastIndex = lines.lastIndex(where: { $0.source == source }) else { return }
+    /// Update the most recent line for a given speaker
+    func updateLastLine(with text: String, for speaker: SpeakerID) {
+        guard let lastIndex = lines.lastIndex(where: { $0.speaker == speaker }) else { return }
         lines[lastIndex].text = text
+    }
+
+    /// Find a line by ID
+    func findLine(byId id: UUID) -> TranscriptLine? {
+        lines.first { $0.id == id }
+    }
+
+    /// Update a specific line by ID
+    func updateLine(id: UUID, text: String) {
+        guard let index = lines.firstIndex(where: { $0.id == id }) else { return }
+        lines[index].text = text
     }
 
     func stop() {
