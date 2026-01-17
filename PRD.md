@@ -23,6 +23,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Copy behavior** | Text only (default) | Copies just the words, no speaker label. More options in v2 |
 | **Timestamps** | Record but don't display | Stored in data model for future use, hidden in MVP UI |
 | **macOS target** | macOS 15 Sequoia | Latest APIs, Apple Silicon optimized |
+| **Hardware target** | Apple Silicon only (M1+) | ANE required for real-time performance, no Intel support |
 
 ### Audio Capture
 | Decision | Choice | Notes |
@@ -106,7 +107,8 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Line ordering** | Timestamp-based interleaving | Use sub-chunk timestamps to interleave mic/app lines accurately |
 | **Line updates** | Append to existing line | Mutable lines - continue adding until silence or speaker change |
 | **Typing indicator** | Subtle blinking cursor | Show at end of line while transcription continues |
-| **Silence detection** | User configurable in Settings | Default 1.5s silence, 0.01 RMS threshold. User can adjust. |
+| **Silence detection** | Silero VAD (neural) | FluidAudio's Silero VAD: <2ms inference, 32ms chunks, robust to noise |
+| **Silence duration** | User configurable | Default 1.5s silence ends a line. User can adjust in Settings. |
 | **Chunk boundaries** | Smart boundary detection | Detect silence/pauses for natural boundaries, avoid cutting words |
 | **Simultaneous speech** | Interleaved by timestamp | When both speak at once, order lines by actual timing |
 | **Parallel transcription** | Yes, both streams concurrent | Transcribe mic and app audio in parallel for lower latency |
@@ -376,7 +378,7 @@ protocol TranscriptionProvider {
 
 ### Settings (Preferences Window)
 - [ ] Global hotkey configuration
-- [ ] Silence detection threshold (default: 1.5s, 0.01 RMS)
+- [ ] Silence duration threshold (default: 1.5s) - how long silence before new line
 - [ ] Always-on-top toggle (persisted)
 - [ ] Clear model cache button
 - [ ] Export diagnostics button (logs + system info, no audio)
@@ -636,8 +638,7 @@ enum DefaultsKey {
     static let globalHotkey = "globalHotkey"
     static let alwaysOnTop = "alwaysOnTop"
     static let windowFrame = "windowFrame"
-    static let silenceDuration = "silenceDuration"      // Default: 1.5
-    static let silenceThreshold = "silenceThreshold"    // Default: 0.01
+    static let silenceDuration = "silenceDuration"      // Default: 1.5 seconds
 }
 ```
 
@@ -707,7 +708,7 @@ enum DefaultsKey {
 ### Settings
 - [ ] Settings window opens from menu bar (Cmd+,)
 - [ ] Can configure global hotkey
-- [ ] Can adjust silence detection threshold
+- [ ] Can adjust silence duration (1.5s default)
 - [ ] Always-on-top toggle persists across launches
 - [ ] Clear model cache works (deletes, prompts re-download)
 - [ ] Export diagnostics creates log file
