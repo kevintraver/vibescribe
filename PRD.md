@@ -17,7 +17,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Session flow** | Manual start/stop + global hotkeys | User clicks Record/Stop, or uses keyboard shortcut from anywhere |
 | **Window mode** | Normal window (default) | Option to toggle floating/always-on-top. Menu bar app in v2 |
-| **Window size** | 600x500 | Sidebar (150px) + transcript area. Wider for session history. |
+| **Window size** | 600x500 default, 400x300 min | Sidebar (150px fixed) + transcript area. Resizable. |
 | **Speaker labels** | "You" / "Remote" | Based on audio source (mic = You, system = Remote) |
 | **Line definition** | Continuous speech segment | New line on speaker change or 1.5s silence |
 | **Copy behavior** | Text only (default) | Copies just the words, no speaker label. More options in v2 |
@@ -29,7 +29,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Mic selection** | System default + optional picker | Use system default, but allow selecting another mic |
-| **System audio** | Optional single app picker | User can select an app, or skip (mic-only mode for Loopback users) |
+| **System audio** | Optional single app picker | "None (mic only)" as first option, then running apps with audio |
 | **Source requirement** | Mic required, app optional | Can record mic-only or mic + app. App-only not supported. |
 | **Source selection UI** | Start recording dialog | When clicking Record, show quick picker for mic + optional app |
 | **Remember sources** | Yes, auto-select last used | Pre-select previous mic + app on next launch |
@@ -40,7 +40,8 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Sessions** | New session each recording | Every Start creates fresh session |
-| **Session naming** | Click to rename | Default is timestamp, user can rename |
+| **Session naming** | Click to rename | Default is relative time ("Today 9:30 AM"), user can rename |
+| **Session preview** | First ~50 chars | Truncated preview of first line in sidebar |
 | **Session limit** | Warn at 1 hour, prompt for new | Modal prompting to start new session |
 | **Storage limit** | Warn at 1GB | Show warning when database exceeds 1GB, suggest cleanup |
 | **Transcript editing** | Read-only | No editing, preserves original transcription |
@@ -48,9 +49,9 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **View history while recording** | Yes, recording continues | Can browse past sessions, recording runs in background |
 | **Long sessions** | Paginate old lines | Show recent lines, load older ones on scroll |
 | **Sidebar list** | Recent 50 + Load more | Show recent 50 sessions, button to load more |
-| **Visual style** | Native macOS | System fonts, standard colors, matches OS appearance |
-| **Session deletion** | Yes, swipe or button | Allow deleting sessions from sidebar in MVP |
-| **Session export** | Yes, plain text | Export session as .txt file with speaker labels |
+| **Visual style** | Native macOS | System fonts, colors follow system light/dark mode |
+| **Session deletion** | Yes, with confirmation | Swipe or button, shows "Delete session?" confirmation dialog |
+| **Session export** | Yes, plain text with labels | "You: text\\nRemote: text" format, no timestamps |
 | **Crash recovery** | Prompt on next launch | Detect crash, offer to recover last session |
 | **Sidebar shows duration** | Yes | Display recording duration alongside date/time |
 | **Session retention** | Infinite until deleted | Keep all sessions forever, user manually deletes |
@@ -60,8 +61,10 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 ### Copy & Interaction
 | Decision | Choice | Notes |
 |----------|--------|-------|
-| **Copy feedback** | Brief toast/checkmark | Small confirmation that disappears after 1-2 seconds |
+| **Copy button placement** | Always visible on right | Small copy icon on right side of each line |
+| **Copy feedback** | Toast at bottom center | Small confirmation that disappears after 1-2 seconds |
 | **Multi-select copy** | Yes, Cmd+click | Select multiple lines, copy all at once |
+| **Selection visual** | Highlight background | Selected lines have subtle colored background (like Finder) |
 | **Multi-copy format** | Newline separated, no labels | Each line on its own line, text only |
 | **Copy All button** | No | Use Cmd+A to select all, then copy |
 | **Keyboard shortcuts** | Standard macOS | Cmd+C copy, Cmd+S stop, Cmd+P pause/resume |
@@ -70,12 +73,12 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 ### Global Hotkey
 | Decision | Choice | Notes |
 |----------|--------|-------|
-| **Hotkey** | User configurable | Let user set their own shortcut in settings |
+| **Hotkey** | User configurable, no default | User must set their own shortcut in settings (none by default) |
 | **Hotkey when not recording** | Start with last sources | No dialog, immediately start using remembered mic/app |
 | **Hotkey when paused** | Resume recording | Hotkey resumes capture from paused state |
 | **Hotkey brings to foreground** | Configurable | User can choose whether hotkey brings app to front |
 | **Hotkey debounce** | 500ms | Ignore repeated presses within 500ms to prevent accidental toggles |
-| **Recording indicator** | Red dot + pulse animation | Classic recording indicator in window |
+| **Recording indicator** | Red dot + pulse (recording), yellow dot static (paused) | Visual state change when paused |
 | **Click Record while recording** | Ignore (no-op) | Clicking Record again does nothing if already recording |
 
 ### Error Handling
@@ -85,6 +88,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Permissions denied** | Inline error + retry | Display message in UI with button to open System Settings |
 | **Model download failure** | Show retry button | Block recording until download succeeds |
 | **Model download blocking** | Yes, block until complete | Cannot record until model is downloaded |
+| **Model download UI** | Progress bar + percentage | "Downloading model... 45% (292 MB / 650 MB)" |
 | **Transcription failures** | Silent skip | Skip failed chunk, continue recording |
 | **Model** | Parakeet v3 only | Multilingual, simpler UX, one model to download |
 | **App quits during recording** | Pause and notify | Pause system audio capture, show notification, continue mic |
@@ -331,23 +335,25 @@ protocol TranscriptionProvider {
 - [ ] Mutable lines: append to existing line until silence/speaker change
 
 ### Window Layout
-- [ ] Window size: 600x500 (wider for sidebar + transcript)
-- [ ] Left sidebar (~150px fixed): session history list
+- [ ] Window size: 600x500 default, 400x300 minimum
+- [ ] Left sidebar (150px fixed): session history list
 - [ ] Right area: transcript view + controls
-- [ ] Resizable window, sidebar stays fixed width
-- [ ] Native macOS styling (system fonts, colors)
+- [ ] Resizable window, sidebar width stays fixed
+- [ ] Native macOS styling (follows system light/dark mode)
 - [ ] Always-on-top toggle
 
 ### Transcript UI
-- [ ] Always auto-scroll to bottom
-- [ ] Copy button per line (text only, no label)
+- [ ] Auto-scroll to bottom (resumes when user scrolls back down)
+- [ ] Copy button always visible on right side of each line
+- [ ] Copy toast appears at bottom center of window
+- [ ] Multi-select with Cmd+click (highlight background)
 - [ ] Read-only (no editing)
 
 ### Recording Controls (highly visible)
 - [ ] **Large Pause button** (yellow/orange) - pauses capture, keeps session open
 - [ ] **Large Resume button** (green) - resumes capture after pause
 - [ ] **Large Stop button** (red) - ends session, auto-saves
-- [ ] Recording indicator: red dot + pulse (animates when recording, static when paused)
+- [ ] Recording indicator: red dot + pulse when recording, yellow/orange dot (static) when paused
 - [ ] Visual state: "Recording" / "Paused" / "Stopped" clearly shown
 
 ### Session Lifecycle
@@ -600,7 +606,7 @@ final class ThreadSafeAudioBuffer {
 ```swift
 struct StartRecordingDialog: View {
     @State var selectedMic: AudioDeviceID?
-    @State var selectedApp: SCRunningApplication?
+    @State var selectedApp: SCRunningApplication?  // nil = "None (mic only)"
 
     var body: some View {
         VStack {
@@ -613,9 +619,11 @@ struct StartRecordingDialog: View {
 
             // App picker (running apps with audio)
             Picker("Capture audio from", selection: $selectedApp) {
+                Text("None (mic only)").tag(nil as SCRunningApplication?)
+                Divider()
                 ForEach(runningApps) { app in
                     Label(app.applicationName, image: app.icon)
-                        .tag(app)
+                        .tag(app as SCRunningApplication?)
                 }
             }
 
@@ -652,7 +660,7 @@ enum DefaultsKey {
 - [ ] Prompts for mic permission
 - [ ] Shows inline error + retry if mic denied
 - [ ] Prompts for screen recording permission
-- [ ] Model download starts with progress indicator
+- [ ] Model download shows progress bar with percentage and size (e.g., "45% (292 MB / 650 MB)")
 - [ ] Model download resumes after network interruption
 - [ ] Model download completes (~3-5 min, ~650MB)
 - [ ] App works fully offline after model is downloaded
@@ -662,8 +670,10 @@ enum DefaultsKey {
 - [ ] Dialog shows mic dropdown with available mics
 - [ ] Dialog shows app dropdown with running apps
 - [ ] Last used mic/app pre-selected on subsequent launches
+- [ ] "None (mic only)" option available in app picker
 - [ ] Start Recording begins capture
 - [ ] Red dot + pulse animation visible while recording
+- [ ] Pause changes indicator to yellow/orange dot (static)
 - [ ] Pause button stops capture, keeps session open
 - [ ] Resume button resumes capture after pause
 - [ ] Stop button ends session, transcript stays visible
@@ -681,15 +691,20 @@ enum DefaultsKey {
 
 ### Window & Layout
 - [ ] Window opens at 600x500
-- [ ] Window is resizable
-- [ ] Sidebar visible on left (~150px)
-- [ ] Sidebar shows list of past sessions
+- [ ] Window is resizable (minimum 400x300)
+- [ ] Sidebar visible on left (150px fixed)
+- [ ] Sidebar shows list of past sessions with relative time ("Today 9:30 AM")
+- [ ] Session preview shows first ~50 chars of transcript
 - [ ] Click past session to view its transcript
 - [ ] Current session highlighted in sidebar
 - [ ] Transcript auto-scrolls to bottom
-- [ ] Copy button on each line works
+- [ ] Scrolling up pauses auto-scroll, scrolling back down resumes
+- [ ] Copy button always visible on right side of each line
 - [ ] Copied text is plain text (no speaker label)
+- [ ] Copy toast appears at bottom center
+- [ ] Multi-select with Cmd+click shows highlighted background
 - [ ] Always-on-top toggle works
+- [ ] Follows system light/dark mode
 
 ### Global Hotkey
 - [ ] Can configure custom hotkey in settings
@@ -703,7 +718,7 @@ enum DefaultsKey {
 - [ ] SQLite database in `~/Library/Application Support/Vibescribe/`
 - [ ] Past sessions appear in sidebar
 - [ ] Can click past session to view its transcript
-- [ ] Can delete sessions via swipe or button
+- [ ] Delete session shows confirmation dialog before deleting
 
 ### Settings
 - [ ] Settings window opens from menu bar (Cmd+,)
