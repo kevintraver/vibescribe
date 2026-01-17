@@ -42,7 +42,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Sessions** | New session each recording | Every Start creates fresh session |
 | **Minimum duration** | 3 seconds | Recordings shorter than 3s are discarded (accidental starts) |
-| **Session naming** | Click to rename | Default is dynamic relative time ("Today" → "Yesterday" at midnight) |
+| **Session naming** | Inline editable | Click name to edit directly in sidebar; default is dynamic relative time |
 | **Session preview** | First ~50 chars | Truncated preview of first line in sidebar |
 | **Session limit** | Warn every hour | Modal at 1h, 2h, 3h, etc. prompting to start new session |
 | **Storage limit** | Warn at 1GB (advisory) | SQLite file only; show dismissible warning when it exceeds 1GB |
@@ -111,7 +111,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Device change debounce** | 200ms | Wait 200ms for device state to settle before responding |
 | **Hotkey conflict** | Warn on conflict | Show warning if chosen hotkey is already in use system-wide |
 | **Model updates** | No auto-update check | Use downloaded model until user clears cache |
-| **Clear model cache** | Yes, in Settings | Allow users to delete model and re-download |
+| **Clear model cache** | Yes, in Settings | Delete and re-download same pinned version (Parakeet v3) |
 | **Diagnostics export** | v2 feature | Moved to post-MVP |
 | **Always-on-top persistence** | UserDefaults | Remember preference, apply on next launch |
 | **Mic unavailable on launch** | Fall back to system default | If last-used mic is unplugged, silently use system default |
@@ -126,20 +126,20 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Line ordering** | Timestamp-based interleaving | Use sub-chunk timestamps to interleave mic/app lines accurately |
 | **Line updates** | Append to existing line | Mutable lines - continue adding until silence or speaker change |
-| **Typing indicator** | Subtle blinking cursor | Show at end of line while transcription continues |
+| **Typing indicator** | Blinking cursor only | Show at end of line while drafting (no separate spinner) |
 | **Silence detection** | Silero VAD (neural) | FluidAudio's Silero VAD: <2ms inference, 32ms chunks, robust to noise |
 | **Silence duration** | User configurable (0.5s - 3.0s) | Default 1.5s, 0.5s steps. Controls line-break timing after VAD detects silence. |
 | **Chunk boundaries** | VAD-driven + timer fallback | Silero VAD detects speech end; 1.5s timer as fallback for continuous speech |
 | **Simultaneous speech** | Interleaved by timestamp | When both speak at once, order lines by actual timing |
 | **Parallel transcription** | Yes, both streams concurrent | Transcribe mic and app audio in parallel for lower latency |
-| **Transcription failure** | Silent skip | Skip failed chunk, don't show error marker |
+| **Transcription failure** | Silent skip, log internally | Skip failed chunk in UI but log to event file for diagnostics |
 | **Browser audio** | Capture all app audio | No tab-specific capture. All browser audio captured together. |
 | **Noise reduction** | None | Send raw audio to model. Let Parakeet handle it. |
 | **Language detection** | Auto-detect from audio | Parakeet v3 auto-detects. No user input needed. |
 | **Profanity** | Show raw, uncensored | Transcribe exactly what's said. |
 | **Confidence display** | No distinction | Show all text the same regardless of confidence level |
 | **Target latency** | Under 2 seconds | Text should appear within 2s of speech |
-| **Processing indicator** | Subtle spinner/dots | Show transcription in progress during any lag |
+| **Processing indicator** | None (cursor suffices) | Blinking cursor indicates active transcription |
 | **Persistence** | SQLite database | More robust than JSON, supports queries |
 | **Auto-save frequency** | Every chunk (~1.5s) | Write after each transcription for maximum data safety |
 | **Draft text** | Overwrite in place | Same line updates as transcription refines, final text replaces draft |
