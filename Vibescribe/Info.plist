@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Vibescribe</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vibescribe</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.vibescribe.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>Vibescribe</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <!-- Required for mic permission prompt -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Vibescribe needs microphone access to transcribe your voice during recordings.</string>
+
+    <!-- Required for screen recording permission prompt -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Vibescribe needs screen recording permission to capture audio from other applications.</string>
+</dict>
+</plist>
