@@ -30,7 +30,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Mic selection** | System default + optional picker | Use system default, but allow selecting another mic |
 | **System audio** | Optional single app picker | "None (mic only)" as first option, then running apps with audio |
-| **Source requirement** | Mic required, app optional | Can record mic-only or mic + app. App-only not supported. |
+| **Source requirement** | At least one source | Can record mic-only, mic + app, or app-only (if mic denied) |
 | **Source selection UI** | Start recording dialog | When clicking Record, show quick picker for mic + optional app |
 | **Remember sources** | Yes, auto-select last used | Pre-select previous mic + app on next launch |
 | **App picker contents** | Any running app | Show all running applications in the picker |
@@ -42,18 +42,18 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 |----------|--------|-------|
 | **Sessions** | New session each recording | Every Start creates fresh session |
 | **Minimum duration** | 3 seconds | Recordings shorter than 3s are discarded (accidental starts) |
-| **Session naming** | Click to rename | Default is relative time ("Today 9:30 AM"), user can rename |
+| **Session naming** | Click to rename | Default is dynamic relative time ("Today" → "Yesterday" at midnight) |
 | **Session preview** | First ~50 chars | Truncated preview of first line in sidebar |
-| **Session limit** | Warn at 1 hour, prompt for new | Modal prompting to start new session |
-| **Storage limit** | Warn at 1GB (advisory) | Show dismissible warning when database exceeds 1GB |
+| **Session limit** | Warn every hour | Modal at 1h, 2h, 3h, etc. prompting to start new session |
+| **Storage limit** | Warn at 1GB (advisory) | SQLite file only; show dismissible warning when it exceeds 1GB |
 | **Transcript editing** | Read-only | No editing, preserves original transcription |
-| **Auto-scroll** | Pause if user scrolls up | Resume auto-scroll when user scrolls back to bottom |
+| **Auto-scroll** | Pause if user scrolls up | Resume when within 50px of bottom |
 | **View history while recording** | Yes, recording continues | Can browse past sessions, recording runs in background |
 | **Long sessions** | Paginate old lines | Show recent lines, load older ones on scroll |
 | **Sidebar list** | Recent 50 + Load more | Show recent 50 sessions, button to load more |
 | **Visual style** | Native macOS | System fonts, colors follow system light/dark mode |
 | **Session deletion** | Yes, with confirmation | Swipe or button, shows "Delete session?" confirmation dialog |
-| **Session export** | Yes, plain text with labels | "You: text\\nRemote: text" format, no timestamps |
+| **Session export** | Plain text, lines only | "You: text\\nRemote: text" format, no header or timestamps |
 | **Crash recovery** | Show last transcript | Detect crash, reopen recovered session for viewing (resume is v2) |
 | **Sidebar shows duration** | Yes | Display recording duration alongside date/time |
 | **Session retention** | Infinite until deleted | Keep all sessions forever, user manually deletes |
@@ -68,8 +68,8 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Multi-select copy** | Yes, Cmd+click | Select multiple lines, copy all at once |
 | **Selection visual** | Highlight background | Selected lines have subtle colored background (like Finder) |
 | **Multi-copy format** | Newline separated, no labels | Each line on its own line, text only |
-| **Copy All button** | No | Use Cmd+A to select all, then copy |
-| **Keyboard shortcuts** | Standard macOS | Cmd+C copy, Cmd+S stop, Cmd+P pause/resume |
+| **Copy All button** | No | Use multi-select (Cmd+click) then copy |
+| **Keyboard shortcuts** | Minimal for MVP | Cmd+C copy only; stop/pause via buttons or global hotkey |
 | **Dock presence** | Always show in dock | Standard macOS app behavior |
 
 ### Global Hotkey
@@ -78,6 +78,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Hotkey** | User configurable, no default | User must set their own shortcut in settings (none by default) |
 | **Hotkey when not recording** | Start with last sources | No dialog, immediately start using remembered mic/app |
 | **Hotkey without sources set** | Open Start Recording dialog | If no previous sources or permissions, show dialog to configure |
+| **Hotkey when last app missing** | Open Start Recording dialog | If remembered app isn't running, show dialog to pick another |
 | **Hotkey when paused** | Resume recording | Hotkey resumes capture from paused state |
 | **Hotkey brings to foreground** | Configurable | User can choose whether hotkey brings app to front |
 | **Hotkey debounce** | 500ms | Ignore repeated presses within 500ms to prevent accidental toggles |
@@ -89,7 +90,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Permission order** | Sequential: mic first, then screen | Request mic upfront, screen recording after mic granted |
-| **Mic denied** | Allow browsing only | Can view past sessions, can't record until mic granted |
+| **Mic denied** | Allow app-only recording | Can record system audio without mic if screen permission granted |
 | **Screen recording denied** | Allow mic-only recording | App works, just can't capture system audio. Note shown in app picker. |
 | **Permission check timing** | On demand | Check mic when clicking Record, check screen when selecting an app |
 | **Runtime permission revoke** | Detect and pause | Monitor for permission changes, pause recording if revoked mid-session |
@@ -127,7 +128,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Line updates** | Append to existing line | Mutable lines - continue adding until silence or speaker change |
 | **Typing indicator** | Subtle blinking cursor | Show at end of line while transcription continues |
 | **Silence detection** | Silero VAD (neural) | FluidAudio's Silero VAD: <2ms inference, 32ms chunks, robust to noise |
-| **Silence duration** | User configurable | Default 1.5s silence ends a line. User can adjust in Settings. |
+| **Silence duration** | User configurable (0.5s - 3.0s) | Default 1.5s, 0.5s steps. Controls line-break timing after VAD detects silence. |
 | **Chunk boundaries** | VAD-driven + timer fallback | Silero VAD detects speech end; 1.5s timer as fallback for continuous speech |
 | **Simultaneous speech** | Interleaved by timestamp | When both speak at once, order lines by actual timing |
 | **Parallel transcription** | Yes, both streams concurrent | Transcribe mic and app audio in parallel for lower latency |
@@ -141,7 +142,7 @@ A macOS desktop app for live transcription of collaborative conversations. Captu
 | **Processing indicator** | Subtle spinner/dots | Show transcription in progress during any lag |
 | **Persistence** | SQLite database | More robust than JSON, supports queries |
 | **Auto-save frequency** | Every chunk (~1.5s) | Write after each transcription for maximum data safety |
-| **Draft text** | Yes, show while processing | Display provisional text that updates when transcription completes |
+| **Draft text** | Overwrite in place | Same line updates as transcription refines, final text replaces draft |
 | **Timestamp storage** | Start time only | Record when each line began, sufficient for ordering |
 | **Mid-session source change** | Allowed, same session | Can switch mic/app mid-recording, session continues |
 | **Source change indication** | None | Transcript continues seamlessly, no marker when sources change |
