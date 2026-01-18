@@ -166,8 +166,8 @@ struct StartRecordingDialog: View {
         Log.info("loadRunningApps() called", category: .ui)
         isLoadingApps = true
 
-        // Request permission (prompts on first use)
-        let status = permissions.requestScreenPermission()
+        // Request permission (prompts on first use) - uses ScreenCaptureKit which respects audio-only permission
+        let status = await permissions.requestScreenPermission()
         appState.hasScreenPermission = permissions.hasScreenPermission
 
         if status == .granted {

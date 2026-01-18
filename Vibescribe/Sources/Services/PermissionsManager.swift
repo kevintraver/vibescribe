@@ -14,7 +14,7 @@ enum RevokedPermission {
 }
 
 /// Manages app permissions for microphone and screen recording
-/// Uses best practices from VoiceInk, Dayflow, and other production macOS apps
+/// Uses ScreenCaptureKit for audio permission (supports "System Audio Recording Only" in macOS 15+)
 @MainActor
 final class PermissionsManager: ObservableObject {
     public enum PermissionStatus {
@@ -46,11 +46,15 @@ final class PermissionsManager: ObservableObject {
 
     private init() {
         self.hasMicPermission = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        self.hasScreenPermission = CGPreflightScreenCaptureAccess()
+        self.hasScreenPermission = false  // Will be checked asynchronously
         self.micPermissionStatus = AVCaptureDevice.authorizationStatus(for: .audio)
 
         setupNotificationObservers()
-        checkAllPermissions()
+
+        // Check screen permission asynchronously using ScreenCaptureKit
+        Task {
+            await checkScreenPermissionAsync()
+        }
     }
 
     deinit {
@@ -73,7 +77,6 @@ final class PermissionsManager: ObservableObject {
         // Only transition to granted, don't auto-flip to denied
         // This prevents UI flicker and supports quit-and-reopen workflows
         let currentMic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        let currentScreen = CGPreflightScreenCaptureAccess()
 
         if currentMic && !hasMicPermission {
             Log.info("Mic permission granted (detected on app activation)", category: .permissions)
@@ -81,9 +84,13 @@ final class PermissionsManager: ObservableObject {
             micPermissionStatus = .authorized
         }
 
-        if currentScreen && !hasScreenPermission {
-            Log.info("Screen permission granted (detected on app activation)", category: .permissions)
-            hasScreenPermission = true
+        // Check screen permission asynchronously
+        Task {
+            let currentScreen = await checkScreenPermissionStatus()
+            if currentScreen && !hasScreenPermission {
+                Log.info("Screen permission granted (detected on app activation)", category: .permissions)
+                hasScreenPermission = true
+            }
         }
     }
 
@@ -159,32 +166,79 @@ final class PermissionsManager: ObservableObject {
 
     // MARK: - Screen Recording Permission
 
-    /// Check screen recording permission using CGPreflightScreenCaptureAccess (synchronous, fast)
-    func checkScreenPermission() {
-        let granted = CGPreflightScreenCaptureAccess()
-        hasScreenPermission = granted
-        Log.debug("Screen permission check: \(granted)", category: .permissions)
+    /// Check screen permission status using ScreenCaptureKit (respects "System Audio Recording Only")
+    private func checkScreenPermissionStatus() async -> Bool {
+        do {
+            // SCShareableContent.excludingDesktopWindows triggers permission check
+            // and respects both full screen recording AND audio-only permissions
+            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            return true
+        } catch {
+            // Error means no permission
+            return false
+        }
     }
 
-    /// Request screen recording permission
-    /// Returns true if permission was already granted, false if user needs to grant in Settings
-    func requestScreenPermission() -> PermissionStatus {
+    /// Check screen recording permission asynchronously
+    func checkScreenPermissionAsync() async {
+        let granted = await checkScreenPermissionStatus()
+        hasScreenPermission = granted
+        Log.debug("Screen permission check (ScreenCaptureKit): \(granted)", category: .permissions)
+    }
+
+    /// Synchronous check - for backward compatibility (uses cached value)
+    func checkScreenPermission() {
+        // Trigger async check but don't wait
+        Task {
+            await checkScreenPermissionAsync()
+        }
+    }
+
+    /// Request screen recording permission using ScreenCaptureKit
+    /// This triggers the appropriate permission dialog (audio-only or full screen)
+    func requestScreenPermission() async -> PermissionStatus {
         // Check if already granted
-        if CGPreflightScreenCaptureAccess() {
+        let alreadyGranted = await checkScreenPermissionStatus()
+        if alreadyGranted {
             hasScreenPermission = true
             return .granted
         }
 
         // It has not been requested before, so we will request it
         if !hasRequestedScreenRecording {
-            // First time: trigger the system prompt
-            Log.info("First time requesting screen recording permission", category: .permissions)
-            CGRequestScreenCaptureAccess()
+            // First time: SCShareableContent request triggers the system prompt
+            Log.info("First time requesting screen capture permission (via ScreenCaptureKit)", category: .permissions)
             hasRequestedScreenRecording = true
+
+            // The check above already triggered the permission dialog if needed
+            // Check again after a small delay to see if granted
+            try? await Task.sleep(for: .milliseconds(100))
+            let granted = await checkScreenPermissionStatus()
+            hasScreenPermission = granted
+
+            if granted {
+                return .granted
+            }
             return .notDetermained
         }
 
         return .denied
+    }
+
+    /// Synchronous version for backward compatibility
+    func requestScreenPermissionSync() -> PermissionStatus {
+        // For code that can't be async, trigger permission check
+        Task {
+            _ = await requestScreenPermission()
+        }
+
+        if hasScreenPermission {
+            return .granted
+        }
+        if hasRequestedScreenRecording {
+            return .denied
+        }
+        return .notDetermained
     }
 
     /// Reset the "has requested" flag (useful for testing)
@@ -202,21 +256,25 @@ final class PermissionsManager: ObservableObject {
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self else { return }
 
-            let currentMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-            let currentMicGranted = currentMicStatus == .authorized
-            if !currentMicGranted && lastMicGranted {
-                onRevoked(.microphone)
-            }
-            lastMicGranted = currentMicGranted
-            micPermissionStatus = currentMicStatus
-            hasMicPermission = currentMicGranted
+            Task { @MainActor in
+                // Check mic permission
+                let currentMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                let currentMicGranted = currentMicStatus == .authorized
+                if !currentMicGranted && self.lastMicGranted {
+                    onRevoked(.microphone)
+                }
+                self.lastMicGranted = currentMicGranted
+                self.micPermissionStatus = currentMicStatus
+                self.hasMicPermission = currentMicGranted
 
-            let currentScreenGranted = CGPreflightScreenCaptureAccess()
-            if !currentScreenGranted && lastScreenGranted {
-                onRevoked(.screenRecording)
+                // Check screen permission using ScreenCaptureKit
+                let currentScreenGranted = await self.checkScreenPermissionStatus()
+                if !currentScreenGranted && self.lastScreenGranted {
+                    onRevoked(.screenRecording)
+                }
+                self.lastScreenGranted = currentScreenGranted
+                self.hasScreenPermission = currentScreenGranted
             }
-            lastScreenGranted = currentScreenGranted
-            hasScreenPermission = currentScreenGranted
         }
     }
 
