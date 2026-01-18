@@ -28,6 +28,12 @@ final class TranscriptionService: ObservableObject {
     @Published private(set) var isPaused = false
     @Published private(set) var isDiarizerReady = false
 
+    // MARK: - Audio Levels for Visualization
+
+    /// Recent audio levels for waveform visualization (0.0 to 1.0)
+    @Published private(set) var audioLevels: [Float] = []
+    private let maxAudioLevelSamples = 100  // Number of bars in waveform
+
     // MARK: - Components
 
     private let provider: FluidAudioProvider
@@ -177,6 +183,9 @@ final class TranscriptionService: ObservableObject {
         micSilenceStart = nil
         appSilenceStart = nil
 
+        // Reset audio levels
+        audioLevels.removeAll()
+
         // Start audio polling timer
         Log.info("Starting audio poll timer (interval: \(pollIntervalSeconds)s)", category: .audio)
         startChunkTimer()
@@ -320,11 +329,37 @@ final class TranscriptionService: ObservableObject {
         let rms = calculateRMS(samples)
         let isSpeech = rms >= silenceThreshold
 
+        // Update audio levels for waveform visualization (normalize to 0-1, cap at 1)
+        let normalizedLevel = min(rms * 10, 1.0)  // Scale up since speech is typically 0.01-0.1
+        audioLevels.append(normalizedLevel)
+        if audioLevels.count > maxAudioLevelSamples {
+            audioLevels.removeFirst()
+        }
+
         if isSpeech {
             // Speech detected - accumulate and reset silence timer
             micSpeechBuffer.append(contentsOf: samples)
             micSilenceStart = nil
             lastSpeechTimes[.you] = Date()
+
+            // Create placeholder line if this is start of new speech
+            if currentLineIds[.you] == nil, let appState, let session = appState.currentSession {
+                let placeholderLine = TranscriptLine(
+                    text: "",
+                    speaker: .you,
+                    sessionId: session.id
+                )
+                currentLineIds[.you] = placeholderLine.id
+                appState.addLine(placeholderLine)
+                Log.info("Created placeholder line \(placeholderLine.id.uuidString.prefix(8)) for [You]", category: .transcription)
+            }
+
+            // Update speaker and line state to listening
+            appState?.speakerStates[.you] = .listening
+            if let lineId = currentLineIds[.you] {
+                appState?.lineStates[lineId] = .listening
+            }
+
             Log.debug("Mic speech: RMS=\(String(format: "%.4f", rms)), buffer=\(micSpeechBuffer.count)", category: .audio)
         } else {
             // Silence detected
@@ -350,6 +385,12 @@ final class TranscriptionService: ObservableObject {
             micSilenceStart = nil
 
             if samples.count >= minSpeechSamples {
+                // Set state to processing before transcription
+                appState?.speakerStates[.you] = .processing
+                if let lineId = currentLineIds[.you] {
+                    appState?.lineStates[lineId] = .processing
+                }
+
                 Log.info("Mic submitting \(samples.count) samples after \(String(format: "%.2f", silenceDuration))s silence", category: .transcription)
                 await transcribeMicSamples(samples)
             } else {
@@ -359,10 +400,12 @@ final class TranscriptionService: ObservableObject {
             // Check for line finalization after longer silence
             if let lastSpeech = lastSpeechTimes[.you],
                Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
-                // Mark line as no longer active
+                // Mark line and speaker as idle
                 if let lineId = currentLineIds[.you] {
-                    appState?.activeLineIds.remove(lineId)
+                    appState?.lineStates[lineId] = .idle
+                    Log.info("State: line \(lineId.uuidString.prefix(8)) -> IDLE (finalized)", category: .transcription)
                 }
+                appState?.speakerStates[.you] = .idle
                 currentLineIds[.you] = nil
             }
         }
@@ -377,6 +420,17 @@ final class TranscriptionService: ObservableObject {
             // Speech detected - accumulate and reset silence timer
             appSpeechBuffer.append(contentsOf: samples)
             appSilenceStart = nil
+
+            // Update state to listening for all potential remote speakers
+            // (We don't know which speaker until diarization runs)
+            for speakerIndex in 0..<4 {
+                let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+                if let lineId = currentLineIds[speaker] {
+                    appState?.lineStates[lineId] = .listening
+                    appState?.speakerStates[speaker] = .listening
+                }
+            }
+
             Log.debug("App speech: RMS=\(String(format: "%.4f", rms)), buffer=\(appSpeechBuffer.count)", category: .audio)
         } else {
             // Silence detected
@@ -401,6 +455,15 @@ final class TranscriptionService: ObservableObject {
             appSilenceStart = nil
 
             if samples.count >= minSpeechSamples {
+                // Set state to processing for all remote speakers with active lines
+                for speakerIndex in 0..<4 {
+                    let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+                    if let lineId = currentLineIds[speaker] {
+                        appState?.lineStates[lineId] = .processing
+                        appState?.speakerStates[speaker] = .processing
+                    }
+                }
+
                 Log.info("App submitting \(samples.count) samples after \(String(format: "%.2f", silenceDuration))s silence", category: .transcription)
                 await transcribeAppSamples(samples)
             } else {
@@ -412,10 +475,11 @@ final class TranscriptionService: ObservableObject {
                 let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
                 if let lastSpeech = lastSpeechTimes[speaker],
                    Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
-                    // Mark line as no longer active
+                    // Mark line and speaker as idle
                     if let lineId = currentLineIds[speaker] {
-                        appState?.activeLineIds.remove(lineId)
+                        appState?.lineStates[lineId] = .idle
                     }
+                    appState?.speakerStates[speaker] = .idle
                     currentLineIds[speaker] = nil
                 }
             }
@@ -497,13 +561,15 @@ final class TranscriptionService: ObservableObject {
         Log.info("handleTranscriptionResult [\(appState.speakerDisplayLabel(for: speaker))] - currentLineId: \(currentLineId?.uuidString.prefix(8) ?? "nil"), session.lines: \(session.lines.count)", category: .transcription)
 
         if let lineId = currentLineId, let existingLine = session.findLine(byId: lineId) {
-            // Append to existing line
-            let newText = existingLine.text + " " + result.text
+            // Append to existing line (or replace if placeholder was empty)
+            let newText = existingLine.text.isEmpty ? result.text : existingLine.text + " " + result.text
             session.updateLine(id: lineId, text: newText)
             Log.info("UPDATED line \(lineId.uuidString.prefix(8)): \"\(newText.suffix(50))\"", category: .transcription)
 
-            // Mark line as active (being transcribed)
-            appState.activeLineIds.insert(lineId)
+            // Mark line as listening (still accumulating)
+            appState.lineStates[lineId] = .listening
+            appState.speakerStates[speaker] = .listening
+            Log.info("State: UPDATED line \(lineId.uuidString.prefix(8)) -> LISTENING (lineStates count: \(appState.lineStates.count))", category: .transcription)
 
             // Also update in database
             if var line = session.findLine(byId: lineId) {
@@ -523,8 +589,10 @@ final class TranscriptionService: ObservableObject {
             // Track by ID for future appends
             currentLineIds[speaker] = newLine.id
 
-            // Mark line as active (being transcribed)
-            appState.activeLineIds.insert(newLine.id)
+            // Mark line as listening (new line, still accumulating)
+            appState.lineStates[newLine.id] = .listening
+            appState.speakerStates[speaker] = .listening
+            Log.info("State: NEW line \(newLine.id.uuidString.prefix(8)) -> LISTENING (lineStates count: \(appState.lineStates.count))", category: .transcription)
 
             // Save to database and session
             appState.addLine(newLine)

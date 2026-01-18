@@ -3,69 +3,86 @@ import SwiftUI
 struct TranscriptView: View {
     let session: Session
     @Environment(AppState.self) private var appState
+    @ObservedObject private var transcriptionService = TranscriptionService.shared
     @State private var selectedLines: Set<UUID> = []
     @State private var isAutoScrollEnabled = true
     @State private var scrollProxy: ScrollViewProxy?
     @State private var scrollViewHeight: CGFloat = 0
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(session.lines) { line in
-                        TranscriptLineView(
-                            line: line,
-                            isSelected: selectedLines.contains(line.id),
-                            isActive: appState.activeLineIds.contains(line.id),
-                            onCopy: { copyLine(line) },
-                            onSelect: { toggleSelection(line) }
-                        )
-                        .id(line.id)
-                    }
+    private var isRecording: Bool {
+        appState.recordingState == .recording
+    }
 
-                    Color.clear
-                        .frame(height: 1)
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: TranscriptBottomOffsetKey.self,
-                                    value: geo.frame(in: .named("transcriptScroll")).maxY
-                                )
-                            }
-                        )
-                }
-                .padding()
-            }
-            .coordinateSpace(name: "transcriptScroll")
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { scrollViewHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { _, newValue in
-                            scrollViewHeight = newValue
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(session.lines.filter { !$0.text.isEmpty }) { line in
+                            TranscriptLineView(
+                                line: line,
+                                isSelected: selectedLines.contains(line.id),
+                                onCopy: { copyLine(line) },
+                                onSelect: { toggleSelection(line) }
+                            )
+                            .id(line.id)
                         }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: TranscriptBottomOffsetKey.self,
+                                        value: geo.frame(in: .named("transcriptScroll")).maxY
+                                    )
+                                }
+                            )
+                    }
+                    .padding()
                 }
-            )
-            .background(
-                Button("Copy Selected") {
-                    copySelectedLines()
+                .coordinateSpace(name: "transcriptScroll")
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { scrollViewHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, newValue in
+                                scrollViewHeight = newValue
+                            }
+                    }
+                )
+                .background(
+                    Button("Copy Selected") {
+                        copySelectedLines()
+                    }
+                    .keyboardShortcut("c", modifiers: .command)
+                    .opacity(0)
+                )
+                .onAppear {
+                    scrollProxy = proxy
                 }
-                .keyboardShortcut("c", modifiers: .command)
-                .opacity(0)
-            )
-            .onAppear {
-                scrollProxy = proxy
-            }
-            .onChange(of: session.lines.count) { _, _ in
-                if isAutoScrollEnabled, let lastLine = session.lines.last {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastLine.id, anchor: .bottom)
+                .onChange(of: session.lines.count) { _, _ in
+                    if isAutoScrollEnabled, let lastLine = session.lines.last {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastLine.id, anchor: .bottom)
+                        }
                     }
                 }
+                .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
+                    let distanceToBottom = bottomOffset - scrollViewHeight
+                    isAutoScrollEnabled = distanceToBottom <= 50
+                }
             }
-            .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
-                let distanceToBottom = bottomOffset - scrollViewHeight
-                isAutoScrollEnabled = distanceToBottom <= 50
+
+            // Live waveform when recording
+            if isRecording {
+                LiveWaveformView(
+                    levels: transcriptionService.audioLevels,
+                    barColor: .blue.opacity(0.7)
+                )
+                .padding(.horizontal)
+                .padding(.vertical, 12)
+                .background(Color(nsColor: .textBackgroundColor))
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -109,8 +126,32 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
     }
 }
 
-/// Animated waveform indicator for active transcription
+/// Live audio waveform visualization
+struct LiveWaveformView: View {
+    let levels: [Float]
+    let barColor: Color
+
+    private let barWidth: CGFloat = 3
+    private let barSpacing: CGFloat = 2
+    private let maxHeight: CGFloat = 60
+    private let minHeight: CGFloat = 2
+
+    var body: some View {
+        HStack(alignment: .center, spacing: barSpacing) {
+            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(barColor)
+                    .frame(width: barWidth, height: max(minHeight, CGFloat(level) * maxHeight))
+            }
+        }
+        .frame(height: maxHeight)
+        .animation(.easeOut(duration: 0.05), value: levels)
+    }
+}
+
+/// Animated waveform indicator for transcription states
 struct WaveformIndicator: View {
+    let state: AppState.TranscriptionState
     @State private var animating = false
 
     let barCount = 3
@@ -119,22 +160,45 @@ struct WaveformIndicator: View {
     let minHeight: CGFloat = 4
     let maxHeight: CGFloat = 12
 
+    private var animationDuration: Double {
+        switch state {
+        case .listening: return 0.6    // Slower pulse when listening
+        case .processing: return 0.25  // Faster pulse when processing
+        case .idle: return 0.4
+        }
+    }
+
+    private var barColor: Color {
+        switch state {
+        case .listening: return .green.opacity(0.7)
+        case .processing: return .orange.opacity(0.8)
+        case .idle: return .gray.opacity(0.5)
+        }
+    }
+
     var body: some View {
         HStack(spacing: barSpacing) {
             ForEach(0..<barCount, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.accentColor.opacity(0.7))
+                    .fill(barColor)
                     .frame(width: barWidth, height: animating ? maxHeight : minHeight)
                     .animation(
-                        .easeInOut(duration: 0.4)
+                        .easeInOut(duration: animationDuration)
                         .repeatForever(autoreverses: true)
-                        .delay(Double(index) * 0.15),
+                        .delay(Double(index) * 0.1),
                         value: animating
                     )
             }
         }
         .frame(height: maxHeight)
         .onAppear { animating = true }
+        .onChange(of: state) { _, _ in
+            // Reset animation when state changes
+            animating = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                animating = true
+            }
+        }
     }
 }
 
@@ -142,7 +206,6 @@ struct TranscriptLineView: View {
     @Environment(AppState.self) private var appState
     let line: TranscriptLine
     let isSelected: Bool
-    let isActive: Bool
     let onCopy: () -> Void
     let onSelect: () -> Void
 
@@ -173,21 +236,18 @@ struct TranscriptLineView: View {
                 .foregroundStyle(line.speaker.color)
                 .frame(minWidth: labelWidth, alignment: .trailing)
 
-            // Text Content + Waveform/Copy Button inline
+            // Text Content + Copy Button inline
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(line.text)
                     .font(.body)
                     .textSelection(.enabled)
 
-                if isActive {
-                    // Animated waveform for active transcription
-                    WaveformIndicator()
-                } else if isHovered {
+                if isHovered {
                     // Copy Button (inline after text, only visible on hover)
                     Button(action: onCopy) {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
                     .help("Copy line")
