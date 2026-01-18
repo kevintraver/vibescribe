@@ -44,10 +44,19 @@ final class FluidAudioProvider: @unchecked Sendable {
             try await manager.initialize(models: downloadedModels)
             Log.info("ASR manager initialized!", category: .transcription)
 
-            progressHandler?(1.0)
+            progressHandler?(0.9)
 
             self.models = downloadedModels
             self.asrManager = manager
+
+            // Warm-up: Run dummy inference to pre-compile Metal shaders for ANE
+            // This reduces first-inference latency by 2-5 seconds
+            Log.info("Running warm-up inference to compile Metal shaders...", category: .transcription)
+            try await performWarmup(manager: manager)
+            Log.info("Warm-up complete!", category: .transcription)
+
+            progressHandler?(1.0)
+
             self.isReady = true
             Log.info("FluidAudioProvider is READY", category: .transcription)
         } catch {
@@ -80,6 +89,18 @@ final class FluidAudioProvider: @unchecked Sendable {
             confidence: result.confidence,
             speaker: speaker
         )
+    }
+
+    /// Perform warm-up inference to pre-compile Metal shaders for ANE
+    /// This eliminates JIT compilation delay on first real transcription
+    private func performWarmup(manager: AsrManager) async throws {
+        // Generate 1 second of silent audio (16kHz sample rate)
+        let sampleRate = 16000
+        let silentSamples = [Float](repeating: 0.0, count: sampleRate)
+
+        // Run transcription on silent audio - this triggers shader compilation
+        // We don't care about the result, just that the pipeline executes
+        _ = try await manager.transcribe(silentSamples, source: .microphone)
     }
 
     func modelsExistOnDisk() -> Bool {
