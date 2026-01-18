@@ -70,10 +70,10 @@ struct StartRecordingDialog: View {
                             Text("1. Click \"Open Settings\" below")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("2. Enable Vibescribe in the list")
+                            Text("2. Enable VibeScribe in the list")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("3. Quit and reopen Vibescribe (⌘Q, then relaunch)")
+                            Text("3. Quit and reopen VibeScribe (⌘Q, then relaunch)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

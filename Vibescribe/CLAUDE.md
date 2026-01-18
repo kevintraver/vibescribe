@@ -2,22 +2,22 @@
 
 This file provides guidance to coding agents when working with code in this repository.
 
-# Vibescribe Development Guide
+# VibeScribe Development Guide
 
 ## Build & Test Commands
 
 - Build: `swift build`
 - Build and bundle: `./scripts/bundle.sh`
-- Run: `open .build/debug/Vibescribe.app`
-- Kill app: `pkill Vibescribe`
+- Run: `open .build/debug/VibeScribe.app`
+- Kill app: `pkill VibeScribe`
 
 ## Architecture Overview
 
-Vibescribe is a macOS application for live transcription of collaborative conversations using FluidAudio/Parakeet v3.
+VibeScribe is a macOS application for live transcription of collaborative conversations using FluidAudio/Parakeet v3.
 
 **Key Components:**
 
-- `VibescribeApp`: Application entry point, window configuration, hotkey setup
+- `VibeScribeApp`: Application entry point, window configuration, hotkey setup
 - `AppState`: Central observable state management for recording, sessions, permissions
 - `TranscriptionService`: Orchestrates audio capture and transcription pipeline
 - `FluidAudioProvider`: Wraps FluidAudio SDK for speech-to-text
@@ -72,14 +72,14 @@ Follow Swift idioms and default formatting (4-space indentation, spaces around o
 Build, bundle, and relaunch:
 
 ```bash
-./scripts/bundle.sh && pkill Vibescribe; open .build/debug/Vibescribe.app
+./scripts/bundle.sh && pkill VibeScribe; open .build/debug/VibeScribe.app
 ```
 
 ## Key Paths
 
-- App data: `~/Library/Application Support/Vibescribe/`
-- Database: `~/Library/Application Support/Vibescribe/vibescribe.db`
-- Event logs: `~/Library/Application Support/Vibescribe/events.jsonl`
+- App data: `~/Library/Application Support/VibeScribe/`
+- Database: `~/Library/Application Support/VibeScribe/vibescribe.db`
+- Event logs: `~/Library/Application Support/VibeScribe/events.jsonl`
 - Speech model: `~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml/`
 
 ## Dependencies

@@ -29,12 +29,12 @@ final class DatabaseManager: @unchecked Sendable {
             return
         }
 
-        let vibescribeDir = appSupport.appendingPathComponent("Vibescribe")
+        let vibescribeDir = appSupport.appendingPathComponent("VibeScribe")
 
         do {
             try fileManager.createDirectory(at: vibescribeDir, withIntermediateDirectories: true)
         } catch {
-            print("Failed to create Vibescribe directory: \(error)")
+            print("Failed to create VibeScribe directory: \(error)")
             return
         }
 
@@ -322,7 +322,7 @@ final class DatabaseManager: @unchecked Sendable {
             return 0
         }
 
-        let dbPath = appSupport.appendingPathComponent("Vibescribe/vibescribe.db")
+        let dbPath = appSupport.appendingPathComponent("VibeScribe/vibescribe.db")
 
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: dbPath.path)

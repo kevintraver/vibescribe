@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct VibescribeApp: App {
+struct VibeScribeApp: App {
     @State private var appState = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -64,7 +64,7 @@ struct VibescribeApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Log.info("=== Vibescribe Launch ===", category: .general)
+        Log.info("=== VibeScribe Launch ===", category: .general)
         Log.info("macOS version: \(ProcessInfo.processInfo.operatingSystemVersionString)", category: .general)
         Log.info("App bundle: \(Bundle.main.bundleIdentifier ?? "none")", category: .general)
 

@@ -1,12 +1,12 @@
-# Vibescribe Audio Engineering
+# VibeScribe Audio Engineering
 
-This document describes the audio signal flow, processing pipeline, and engineering decisions in Vibescribe from an audio engineering perspective.
+This document describes the audio signal flow, processing pipeline, and engineering decisions in VibeScribe from an audio engineering perspective.
 
 ---
 
 ## System Overview
 
-Vibescribe captures audio from two simultaneous sources, processes them through independent pipelines, and submits complete utterances to a neural speech recognition model.
+VibeScribe captures audio from two simultaneous sources, processes them through independent pipelines, and submits complete utterances to a neural speech recognition model.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -519,7 +519,7 @@ NotificationCenter.default.addObserver(
 
 ## Summary
 
-Vibescribe's audio engineering prioritizes:
+VibeScribe's audio engineering prioritizes:
 
 1. **Low latency** - 100ms polling, immediate buffer access
 2. **Accuracy** - Complete utterances via pause detection

@@ -46,7 +46,7 @@ final class EventLogger: @unchecked Sendable {
             fatalError("Failed to get Application Support directory")
         }
 
-        let vibescribeDir = appSupport.appendingPathComponent("Vibescribe")
+        let vibescribeDir = appSupport.appendingPathComponent("VibeScribe")
         try? fileManager.createDirectory(at: vibescribeDir, withIntermediateDirectories: true)
 
         logFilePath = vibescribeDir.appendingPathComponent("events.jsonl")

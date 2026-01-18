@@ -12,7 +12,7 @@ struct SetupView: View {
                     .font(.system(size: 64))
                     .foregroundStyle(.blue)
 
-                Text("Vibescribe")
+                Text("VibeScribe")
                     .font(.largeTitle)
                     .fontWeight(.bold)
 

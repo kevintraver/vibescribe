@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Vibescribe</string>
+    <string>VibeScribe</string>
     <key>CFBundleDisplayName</key>
-    <string>Vibescribe</string>
+    <string>VibeScribe</string>
     <key>CFBundleIdentifier</key>
     <string>com.vibescribe.app</string>
     <key>CFBundleVersion</key>
@@ -15,7 +15,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>Vibescribe</string>
+    <string>VibeScribe</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSApplicationCategoryType</key>
@@ -23,10 +23,10 @@
 
     <!-- Required for mic permission prompt -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>Vibescribe needs microphone access to transcribe your voice during recordings.</string>
+    <string>VibeScribe needs microphone access to transcribe your voice during recordings.</string>
 
     <!-- Required for screen recording permission prompt -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Vibescribe needs screen recording permission to capture audio from other applications.</string>
+    <string>VibeScribe needs screen recording permission to capture audio from other applications.</string>
 </dict>
 </plist>

@@ -28,7 +28,7 @@ finalization, pause semantics, and session duration accuracy.
 ### 1. Fix Transcript Loading Column
 
 Files:
-- `Vibescribe/Sources/Services/DatabaseManager.swift`
+- `VibeScribe/Sources/Services/DatabaseManager.swift`
 
 Changes:
 - Update `loadLines` query to select `speaker` (not `source`).
@@ -41,7 +41,7 @@ Acceptance:
 ### 2. Line Finalization After Silence
 
 Files:
-- `Vibescribe/Sources/Services/TranscriptionService.swift`
+- `VibeScribe/Sources/Services/TranscriptionService.swift`
 
 Changes:
 - Track silence duration even when no new samples are arriving.
@@ -54,7 +54,7 @@ Acceptance:
 ### 3. Pause Semantics and Buffer Reset
 
 Files:
-- `Vibescribe/Sources/Services/TranscriptionService.swift`
+- `VibeScribe/Sources/Services/TranscriptionService.swift`
 
 Changes:
 - On pause, clear `micSpeechBuffer`/`appSpeechBuffer` and reset
@@ -69,8 +69,8 @@ Acceptance:
 ### 4. Session Duration Accuracy on Stop
 
 Files:
-- `Vibescribe/Sources/Models/Session.swift`
-- `Vibescribe/Sources/Models/AppState.swift`
+- `VibeScribe/Sources/Models/Session.swift`
+- `VibeScribe/Sources/Models/AppState.swift`
 
 Changes:
 - On stop, if `pauseStartTime` is set, fold that time into `pausedDuration`
@@ -82,8 +82,8 @@ Acceptance:
 ### 5. Optional: Persist Pause Metadata
 
 Files:
-- `Vibescribe/Sources/Services/DatabaseManager.swift`
-- `Vibescribe/Sources/Models/Session.swift`
+- `VibeScribe/Sources/Services/DatabaseManager.swift`
+- `VibeScribe/Sources/Models/Session.swift`
 
 Changes:
 - If persisting pause data, add columns to `sessions` (e.g. `paused_duration`).

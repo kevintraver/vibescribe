@@ -3,19 +3,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "Vibescribe",
+    name: "VibeScribe",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "Vibescribe", targets: ["Vibescribe"])
+        .executable(name: "VibeScribe", targets: ["VibeScribe"])
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.8.0")
     ],
     targets: [
         .executableTarget(
-            name: "Vibescribe",
+            name: "VibeScribe",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],

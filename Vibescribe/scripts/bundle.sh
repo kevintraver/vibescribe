@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="Vibescribe"
+APP_NAME="VibeScribe"
 BUNDLE_ID="com.vibescribe.app"
 BUILD_DIR=".build/debug"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -19,7 +19,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 
 # Copy entitlements
-cp "Vibescribe.entitlements" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+cp "VibeScribe.entitlements" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 
 # Create Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
@@ -48,9 +48,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Vibescribe needs microphone access to transcribe your voice.</string>
+    <string>VibeScribe needs microphone access to transcribe your voice.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Vibescribe needs accessibility access for global hotkeys.</string>
+    <string>VibeScribe needs accessibility access for global hotkeys.</string>
 </dict>
 </plist>
 EOF
@@ -60,10 +60,10 @@ SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "
 
 if [ -n "$SIGNING_IDENTITY" ]; then
     echo "Signing with: $SIGNING_IDENTITY"
-    codesign --force --sign "$SIGNING_IDENTITY" --entitlements "Vibescribe.entitlements" "$APP_BUNDLE"
+    codesign --force --sign "$SIGNING_IDENTITY" --entitlements "VibeScribe.entitlements" "$APP_BUNDLE"
 else
     echo "No Apple Development certificate found, using ad-hoc signing..."
-    codesign --force --sign - --entitlements "Vibescribe.entitlements" "$APP_BUNDLE" 2>/dev/null || true
+    codesign --force --sign - --entitlements "VibeScribe.entitlements" "$APP_BUNDLE" 2>/dev/null || true
 fi
 
 echo "Done! Run with:"

@@ -1,4 +1,4 @@
-# Running Vibescribe
+# Running VibeScribe
 
 ## Prerequisites
 
@@ -8,10 +8,10 @@
 ## Build & Run (CLI)
 
 ```bash
-cd /Users/kevin/Code/vibescribe/Vibescribe
+cd /Users/kevin/Code/vibescribe/VibeScribe
 
 # Build the app bundle
-xcodebuild -scheme Vibescribe -configuration Debug \
+xcodebuild -scheme VibeScribe -configuration Debug \
   -derivedDataPath .build/xcode \
   CODE_SIGN_IDENTITY="-" \
   CODE_SIGNING_REQUIRED=NO \
@@ -19,12 +19,12 @@ xcodebuild -scheme Vibescribe -configuration Debug \
   build
 
 # Run
-open .build/xcode/Build/Products/Debug/Vibescribe.app
+open .build/xcode/Build/Products/Debug/VibeScribe.app
 ```
 
 ## First Launch
 
-On first launch, Vibescribe will:
+On first launch, VibeScribe will:
 
 1. **Request microphone permission** - Required for transcription
 2. **Download the Parakeet v3 model** (~650MB) - One-time download
@@ -34,11 +34,11 @@ The app will show a setup screen until both are complete.
 ## Troubleshooting
 
 ### App doesn't appear
-- Check if it's running: `pgrep -l Vibescribe`
-- Kill and retry: `pkill Vibescribe`
+- Check if it's running: `pgrep -l VibeScribe`
+- Kill and retry: `pkill VibeScribe`
 - Try running from Xcode to see console output
 
 ### Permission issues
 - Go to **System Settings > Privacy & Security > Microphone**
-- Ensure Vibescribe is allowed
+- Ensure VibeScribe is allowed
 - For screen recording (system audio): **System Settings > Privacy & Security > Screen Recording**

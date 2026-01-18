@@ -135,7 +135,7 @@ struct HotkeySettingsView: View {
             Section {
                 Toggle("Bring window to front", isOn: $bringToFront)
 
-                Text("When the hotkey is pressed, bring the Vibescribe window to the front")
+                Text("When the hotkey is pressed, bring the VibeScribe window to the front")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -263,7 +263,7 @@ struct StorageSettingsView: View {
             Section {
                 Button("Open Storage Folder") {
                     if let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-                        let vibescribeUrl = url.appendingPathComponent("Vibescribe")
+                        let vibescribeUrl = url.appendingPathComponent("VibeScribe")
                         NSWorkspace.shared.open(vibescribeUrl)
                     }
                 }

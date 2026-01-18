@@ -1,4 +1,4 @@
-# Mac Transcription Accuracy + Diarization Implementation Plan (Vibescribe)
+# Mac Transcription Accuracy + Diarization Implementation Plan (VibeScribe)
 
 ## Goals
 - Improve ASR accuracy for mic and app audio without hurting realtime latency.
