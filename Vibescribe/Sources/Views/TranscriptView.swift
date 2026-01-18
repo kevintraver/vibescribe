@@ -148,14 +148,14 @@ struct TranscriptLineView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Copy Button
+            // Copy Button (only visible on hover)
             Button(action: onCopy) {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .opacity(isHovered ? 1 : 0.5)
+            .opacity(isHovered ? 1 : 0)
             .help("Copy line")
         }
         .padding(.horizontal, 12)
