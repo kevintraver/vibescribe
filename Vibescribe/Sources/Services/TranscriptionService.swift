@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+@preconcurrency import FluidAudio
 
 /// Main service that orchestrates audio capture and transcription
 /// Uses actor isolation for thread-safe state management
@@ -11,7 +12,13 @@ final class TranscriptionService: ObservableObject {
 
     private let sampleRate: Double = 16000
     private var silenceDurationSeconds: TimeInterval = 1.0  // Reduced from 1.5s for more frequent line breaks
-    private var silenceThreshold: Float = 0.012  // Increased from 0.008 for better noise rejection
+
+    // VAD configuration (Silero VAD neural network-based detection)
+    private let vadThreshold: Float = 0.5  // Speech probability threshold (0.5 = balanced, 0.85 = conservative)
+    private let vadChunkSize: Int = 4096   // Silero VAD expects 4096 samples (256ms at 16kHz)
+
+    // Legacy RMS threshold (used as fallback if VAD not ready)
+    private var silenceThreshold: Float = 0.012
 
     // Pause-based submission configuration (optimized based on VoiceInk/Handy analysis)
     private let pollIntervalSeconds: TimeInterval = 0.1  // Check every 100ms
@@ -34,6 +41,7 @@ final class TranscriptionService: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var isPaused = false
     @Published private(set) var isDiarizerReady = false
+    @Published private(set) var isVadReady = false
 
     // MARK: - Audio Levels for Visualization
 
@@ -52,6 +60,7 @@ final class TranscriptionService: ObservableObject {
 
     private let provider: FluidAudioProvider
     private let diarizer = AppAudioDiarizer()
+    private var vadManager: VadManager?
     private let micBuffer = ThreadSafeAudioBuffer()
     private let appBuffer = ThreadSafeAudioBuffer()
     private var micCapture: MicCapture?
@@ -85,6 +94,16 @@ final class TranscriptionService: ObservableObject {
     private var micOnsetCount: Int = 0
     private var appOnsetCount: Int = 0
 
+    // MARK: - VAD State (Silero VAD)
+
+    /// Buffers for accumulating samples for VAD processing (needs 4096 samples)
+    private var micVadBuffer: [Float] = []
+    private var appVadBuffer: [Float] = []
+
+    /// Last VAD probability (for smooth transitions and waveform visualization)
+    private var lastMicVadProbability: Float = 0.0
+    private var lastAppVadProbability: Float = 0.0
+
     // MARK: - Initialization
 
     private init() {
@@ -117,6 +136,21 @@ final class TranscriptionService: ObservableObject {
     /// Prepare the transcription provider (download/load models)
     func prepare(progressHandler: ((Double) -> Void)? = nil) async throws {
         try await provider.prepare(progressHandler: progressHandler)
+
+        // Initialize VAD in background (non-blocking)
+        Task {
+            do {
+                let config = VadConfig(defaultThreshold: vadThreshold)
+                let manager = try await VadManager(config: config)
+                await MainActor.run {
+                    self.vadManager = manager
+                    self.isVadReady = true
+                }
+                Log.info("Silero VAD initialized successfully (threshold: \(self.vadThreshold))", category: .transcription)
+            } catch {
+                Log.warning("VAD initialization failed (will use RMS fallback): \(error)", category: .transcription)
+            }
+        }
 
         // Initialize diarizer in background (non-blocking)
         Task {
@@ -210,6 +244,12 @@ final class TranscriptionService: ObservableObject {
         appPreRollBuffer.removeAll()
         micOnsetCount = 0
         appOnsetCount = 0
+
+        // Reset VAD state
+        micVadBuffer.removeAll()
+        appVadBuffer.removeAll()
+        lastMicVadProbability = 0.0
+        lastAppVadProbability = 0.0
 
         // Reset audio levels
         micAudioLevels.removeAll()
@@ -355,11 +395,11 @@ final class TranscriptionService: ObservableObject {
 
     /// Process mic samples with pause-based submission
     private func processMicSamples(_ samples: [Float]) async {
-        let rms = calculateRMS(samples)
-        let isSpeech = rms >= silenceThreshold
+        // Detect speech using Silero VAD (neural network) or RMS fallback
+        let isSpeech = await detectSpeech(samples: samples, ismic: true)
 
-        // Update audio levels for waveform visualization (normalize to 0-1, cap at 1)
-        let normalizedLevel = min(rms * 10, 1.0)  // Scale up since speech is typically 0.01-0.1
+        // Update audio levels for waveform visualization using VAD probability
+        let normalizedLevel = lastMicVadProbability
         micAudioLevels.append(normalizedLevel)
         if micAudioLevels.count > maxAudioLevelSamples {
             micAudioLevels.removeFirst()
@@ -405,7 +445,7 @@ final class TranscriptionService: ObservableObject {
                     appState?.lineStates[lineId] = .listening
                 }
 
-                Log.debug("Mic speech: RMS=\(String(format: "%.4f", rms)), buffer=\(micSpeechBuffer.count)", category: .audio)
+                Log.debug("Mic speech: VAD=\(String(format: "%.2f", lastMicVadProbability)), buffer=\(micSpeechBuffer.count)", category: .audio)
             }
         } else {
             // Silence detected - reset onset counter
@@ -461,11 +501,11 @@ final class TranscriptionService: ObservableObject {
 
     /// Process app samples with pause-based submission
     private func processAppSamples(_ samples: [Float]) async {
-        let rms = calculateRMS(samples)
-        let isSpeech = rms >= silenceThreshold
+        // Detect speech using Silero VAD (neural network) or RMS fallback
+        let isSpeech = await detectSpeech(samples: samples, ismic: false)
 
-        // Update audio levels for waveform visualization
-        let normalizedLevel = min(rms * 10, 1.0)
+        // Update audio levels for waveform visualization using VAD probability
+        let normalizedLevel = lastAppVadProbability
         appAudioLevels.append(normalizedLevel)
         if appAudioLevels.count > maxAudioLevelSamples {
             appAudioLevels.removeFirst()
@@ -502,7 +542,7 @@ final class TranscriptionService: ObservableObject {
                     }
                 }
 
-                Log.debug("App speech: RMS=\(String(format: "%.4f", rms)), buffer=\(appSpeechBuffer.count)", category: .audio)
+                Log.debug("App speech: VAD=\(String(format: "%.2f", lastAppVadProbability)), buffer=\(appSpeechBuffer.count)", category: .audio)
             }
         } else {
             // Silence detected - reset onset counter
@@ -701,6 +741,83 @@ final class TranscriptionService: ObservableObject {
         appSpeechBuffer.removeAll()
     }
 
+    // MARK: - VAD (Voice Activity Detection)
+
+    /// Detect speech using Silero VAD neural network, with RMS fallback
+    /// - Parameters:
+    ///   - samples: Audio samples to analyze
+    ///   - ismic: True for mic audio, false for app audio
+    /// - Returns: True if speech detected
+    private func detectSpeech(samples: [Float], ismic: Bool) async -> Bool {
+        // Add samples to VAD buffer
+        if ismic {
+            micVadBuffer.append(contentsOf: samples)
+        } else {
+            appVadBuffer.append(contentsOf: samples)
+        }
+
+        // Get reference to correct buffer
+        var vadBuffer = ismic ? micVadBuffer : appVadBuffer
+
+        // If VAD not ready, fall back to RMS-based detection
+        guard let vad = vadManager, isVadReady else {
+            let rms = calculateRMS(samples)
+            let probability = min(rms * 10, 1.0)  // Normalize to 0-1
+            if ismic {
+                lastMicVadProbability = probability
+            } else {
+                lastAppVadProbability = probability
+            }
+            return rms >= silenceThreshold
+        }
+
+        // Process VAD when we have enough samples (4096 = 256ms at 16kHz)
+        if vadBuffer.count >= vadChunkSize {
+            // Extract chunk for VAD processing
+            let chunk = Array(vadBuffer.prefix(vadChunkSize))
+
+            // Remove processed samples from buffer
+            vadBuffer.removeFirst(vadChunkSize)
+            if ismic {
+                micVadBuffer = vadBuffer
+            } else {
+                appVadBuffer = vadBuffer
+            }
+
+            do {
+                // Process chunk through VAD using public API
+                let results = try await vad.process(chunk)
+
+                // Get probability from first result (we process one chunk at a time)
+                let probability = results.first?.probability ?? 0.0
+
+                // Update last probability
+                if ismic {
+                    lastMicVadProbability = probability
+                } else {
+                    lastAppVadProbability = probability
+                }
+
+                // Return speech detection result
+                return probability >= vadThreshold
+            } catch {
+                Log.warning("VAD processing failed, using RMS fallback: \(error)", category: .audio)
+                // Fall back to RMS
+                let rms = calculateRMS(samples)
+                if ismic {
+                    lastMicVadProbability = min(rms * 10, 1.0)
+                } else {
+                    lastAppVadProbability = min(rms * 10, 1.0)
+                }
+                return rms >= silenceThreshold
+            }
+        }
+
+        // Not enough samples yet - use last known probability
+        let lastProbability = ismic ? lastMicVadProbability : lastAppVadProbability
+        return lastProbability >= vadThreshold
+    }
+
     // MARK: - Helpers
 
     /// Calculate RMS (root mean square) of audio samples
@@ -710,7 +827,7 @@ final class TranscriptionService: ObservableObject {
         return sqrt(sumOfSquares / Float(samples.count))
     }
 
-    /// Simple silence detection using RMS threshold
+    /// Simple silence detection using RMS threshold (legacy fallback)
     /// Note: 0.008 works well for typical room noise; speech is usually 0.01-0.05+
     private func isSilence(_ samples: [Float]) -> Bool {
         let rms = calculateRMS(samples)
