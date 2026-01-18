@@ -69,27 +69,10 @@ Follow Swift idioms and default formatting (4-space indentation, spaces around o
 
 ## After Making Changes
 
-Step 1: Build and bundle the app
+Build, bundle, and relaunch:
 
 ```bash
-./scripts/bundle.sh
-```
-
-Step 2: Check if build succeeded
-
-- If you see "Build complete!", proceed to step 3
-- If you see errors, stop here and fix them
-
-Step 3: Kill the running app (if any)
-
-```bash
-pkill Vibescribe
-```
-
-Step 4: Launch the app
-
-```bash
-open .build/debug/Vibescribe.app
+./scripts/bundle.sh && pkill Vibescribe; open .build/debug/Vibescribe.app
 ```
 
 ## Key Paths

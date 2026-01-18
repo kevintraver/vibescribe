@@ -12,7 +12,6 @@ struct StartRecordingDialog: View {
     @State private var runningApps: [RunningApp] = []
     @State private var selectedAppBundleId: String?
     @State private var isLoadingApps = false
-    @State private var showAppPicker = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -50,15 +49,7 @@ struct StartRecordingDialog: View {
                 Label("Capture app audio (optional)", systemImage: "speaker.wave.2.fill")
                     .font(.headline)
 
-                if !showAppPicker {
-                    Button("Add app audio source...") {
-                        showAppPicker = true
-                        Task {
-                            await loadRunningApps()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                } else if isLoadingApps {
+                if isLoadingApps {
                     HStack {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -107,23 +98,26 @@ struct StartRecordingDialog: View {
                         .controlSize(.small)
                     }
                 } else {
-                    Picker("Application", selection: $selectedAppBundleId) {
-                        Text("None (mic only)").tag(nil as String?)
+                    // Menu with icons in dropdown, text-only in selected state
+                    Menu {
+                        Button("None") {
+                            selectedAppBundleId = nil
+                        }
                         Divider()
                         ForEach(runningApps) { app in
-                            Label {
-                                Text(app.name)
-                            } icon: {
+                            Button {
+                                selectedAppBundleId = app.bundleId
+                            } label: {
                                 if let icon = app.icon {
                                     Image(nsImage: icon)
-                                        .resizable()
-                                        .frame(width: 16, height: 16)
                                 }
+                                Text(app.name)
                             }
-                            .tag(app.bundleId as String?)
                         }
+                    } label: {
+                        Text(selectedAppName ?? "None")
                     }
-                    .labelsHidden()
+                    .menuStyle(.button)
                 }
             }
 
@@ -151,11 +145,17 @@ struct StartRecordingDialog: View {
         .task {
             await loadAudioDevices()
             restoreLastUsedSources()
+            await loadRunningApps()  // Load apps immediately
         }
     }
 
     private var canStart: Bool {
         appState.hasMicPermission || (selectedAppBundleId != nil && permissions.hasScreenPermission)
+    }
+
+    private var selectedAppName: String? {
+        guard let bundleId = selectedAppBundleId else { return nil }
+        return runningApps.first { $0.bundleId == bundleId }?.name
     }
 
     private func loadAudioDevices() async {
