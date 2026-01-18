@@ -50,6 +50,9 @@ final class AppState {
     /// Track unique remote speakers seen in current session (for display logic)
     var seenRemoteSpeakers: Set<Int> = []
 
+    /// Track which lines are currently being transcribed (for visual indicator)
+    var activeLineIds: Set<UUID> = []
+
     /// Get display label for a speaker, considering app name and multi-speaker context
     func speakerDisplayLabel(for speaker: SpeakerID) -> String {
         switch speaker {
@@ -149,6 +152,7 @@ final class AppState {
 
         // Reset speaker tracking for new session
         seenRemoteSpeakers.removeAll()
+        activeLineIds.removeAll()
 
         // Persist session immediately
         DatabaseManager.shared.saveSession(session)

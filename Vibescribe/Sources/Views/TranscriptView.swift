@@ -16,6 +16,7 @@ struct TranscriptView: View {
                         TranscriptLineView(
                             line: line,
                             isSelected: selectedLines.contains(line.id),
+                            isActive: appState.activeLineIds.contains(line.id),
                             onCopy: { copyLine(line) },
                             onSelect: { toggleSelection(line) }
                         )
@@ -108,10 +109,40 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
     }
 }
 
+/// Animated waveform indicator for active transcription
+struct WaveformIndicator: View {
+    @State private var animating = false
+
+    let barCount = 3
+    let barWidth: CGFloat = 2
+    let barSpacing: CGFloat = 2
+    let minHeight: CGFloat = 4
+    let maxHeight: CGFloat = 12
+
+    var body: some View {
+        HStack(spacing: barSpacing) {
+            ForEach(0..<barCount, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.accentColor.opacity(0.7))
+                    .frame(width: barWidth, height: animating ? maxHeight : minHeight)
+                    .animation(
+                        .easeInOut(duration: 0.4)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(index) * 0.15),
+                        value: animating
+                    )
+            }
+        }
+        .frame(height: maxHeight)
+        .onAppear { animating = true }
+    }
+}
+
 struct TranscriptLineView: View {
     @Environment(AppState.self) private var appState
     let line: TranscriptLine
     let isSelected: Bool
+    let isActive: Bool
     let onCopy: () -> Void
     let onSelect: () -> Void
 
@@ -142,21 +173,27 @@ struct TranscriptLineView: View {
                 .foregroundStyle(line.speaker.color)
                 .frame(minWidth: labelWidth, alignment: .trailing)
 
-            // Text Content
-            Text(line.text)
-                .font(.body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Text Content + Waveform/Copy Button inline
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(line.text)
+                    .font(.body)
+                    .textSelection(.enabled)
 
-            // Copy Button (only visible on hover)
-            Button(action: onCopy) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                if isActive {
+                    // Animated waveform for active transcription
+                    WaveformIndicator()
+                } else if isHovered {
+                    // Copy Button (inline after text, only visible on hover)
+                    Button(action: onCopy) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy line")
+                }
             }
-            .buttonStyle(.plain)
-            .opacity(isHovered ? 1 : 0)
-            .help("Copy line")
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

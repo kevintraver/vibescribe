@@ -359,6 +359,10 @@ final class TranscriptionService: ObservableObject {
             // Check for line finalization after longer silence
             if let lastSpeech = lastSpeechTimes[.you],
                Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
+                // Mark line as no longer active
+                if let lineId = currentLineIds[.you] {
+                    appState?.activeLineIds.remove(lineId)
+                }
                 currentLineIds[.you] = nil
             }
         }
@@ -408,6 +412,10 @@ final class TranscriptionService: ObservableObject {
                 let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
                 if let lastSpeech = lastSpeechTimes[speaker],
                    Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
+                    // Mark line as no longer active
+                    if let lineId = currentLineIds[speaker] {
+                        appState?.activeLineIds.remove(lineId)
+                    }
                     currentLineIds[speaker] = nil
                 }
             }
@@ -494,6 +502,9 @@ final class TranscriptionService: ObservableObject {
             session.updateLine(id: lineId, text: newText)
             Log.info("UPDATED line \(lineId.uuidString.prefix(8)): \"\(newText.suffix(50))\"", category: .transcription)
 
+            // Mark line as active (being transcribed)
+            appState.activeLineIds.insert(lineId)
+
             // Also update in database
             if var line = session.findLine(byId: lineId) {
                 line.text = newText
@@ -511,6 +522,9 @@ final class TranscriptionService: ObservableObject {
 
             // Track by ID for future appends
             currentLineIds[speaker] = newLine.id
+
+            // Mark line as active (being transcribed)
+            appState.activeLineIds.insert(newLine.id)
 
             // Save to database and session
             appState.addLine(newLine)
