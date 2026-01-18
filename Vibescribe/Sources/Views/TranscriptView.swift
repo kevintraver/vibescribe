@@ -134,7 +134,7 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
     }
 }
 
-/// Continuous wave audio visualization
+/// Continuous wave audio visualization using Canvas for performance
 struct ContinuousWaveView: View {
     let levels: [Float]
     let color: Color
@@ -142,6 +142,7 @@ struct ContinuousWaveView: View {
 
     private let waveHeight: CGFloat = 40
     private let minAmplitude: CGFloat = 2
+    private let downsampleFactor = 2  // Skip every Nth point for performance
 
     init(levels: [Float], color: Color, label: String? = nil) {
         self.levels = levels
@@ -157,74 +158,73 @@ struct ContinuousWaveView: View {
                     .foregroundStyle(.secondary)
             }
 
-            GeometryReader { geo in
-                let width = geo.size.width
-                let height = geo.size.height
+            Canvas { context, size in
+                let width = size.width
+                let height = size.height
                 let midY = height / 2
 
-                // Create smooth wave path
-                Path { path in
-                    guard levels.count > 1 else {
-                        // Draw flat line if no data
-                        path.move(to: CGPoint(x: 0, y: midY))
-                        path.addLine(to: CGPoint(x: width, y: midY))
-                        return
-                    }
-
-                    let stepX = width / CGFloat(levels.count - 1)
-
-                    // Start at first point
-                    let firstAmplitude = max(minAmplitude, CGFloat(levels[0]) * (height / 2 - minAmplitude))
-                    path.move(to: CGPoint(x: 0, y: midY - firstAmplitude))
-
-                    // Draw upper wave with smooth curves
-                    for i in 1..<levels.count {
-                        let x = CGFloat(i) * stepX
-                        let amplitude = max(minAmplitude, CGFloat(levels[i]) * (height / 2 - minAmplitude))
-                        let y = midY - amplitude
-
-                        let prevX = CGFloat(i - 1) * stepX
-                        let controlX = (prevX + x) / 2
-
-                        path.addQuadCurve(
-                            to: CGPoint(x: x, y: y),
-                            control: CGPoint(x: controlX, y: y)
-                        )
-                    }
-
-                    // Draw lower wave (mirror)
-                    for i in (0..<levels.count).reversed() {
-                        let x = CGFloat(i) * stepX
-                        let amplitude = max(minAmplitude, CGFloat(levels[i]) * (height / 2 - minAmplitude))
-                        let y = midY + amplitude
-
-                        if i == levels.count - 1 {
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        } else {
-                            let nextX = CGFloat(i + 1) * stepX
-                            let controlX = (nextX + x) / 2
-
-                            path.addQuadCurve(
-                                to: CGPoint(x: x, y: y),
-                                control: CGPoint(x: controlX, y: y)
-                            )
-                        }
-                    }
-
-                    path.closeSubpath()
+                // Downsample levels for performance
+                let sampledLevels: [Float]
+                if levels.count > downsampleFactor {
+                    sampledLevels = stride(from: 0, to: levels.count, by: downsampleFactor).map { levels[$0] }
+                } else {
+                    sampledLevels = levels
                 }
-                .fill(color.opacity(0.6))
 
-                // Center line
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: midY))
-                    path.addLine(to: CGPoint(x: width, y: midY))
+                guard sampledLevels.count > 1 else {
+                    // Draw flat line if no data
+                    var centerLine = Path()
+                    centerLine.move(to: CGPoint(x: 0, y: midY))
+                    centerLine.addLine(to: CGPoint(x: width, y: midY))
+                    context.stroke(centerLine, with: .color(color.opacity(0.3)), lineWidth: 1)
+                    return
                 }
-                .stroke(color.opacity(0.3), lineWidth: 1)
+
+                let stepX = width / CGFloat(sampledLevels.count - 1)
+
+                // Build wave path
+                var wavePath = Path()
+                let firstAmplitude = max(minAmplitude, CGFloat(sampledLevels[0]) * (height / 2 - minAmplitude))
+                wavePath.move(to: CGPoint(x: 0, y: midY - firstAmplitude))
+
+                // Upper wave
+                for i in 1..<sampledLevels.count {
+                    let x = CGFloat(i) * stepX
+                    let amplitude = max(minAmplitude, CGFloat(sampledLevels[i]) * (height / 2 - minAmplitude))
+                    let y = midY - amplitude
+                    let prevX = CGFloat(i - 1) * stepX
+                    let controlX = (prevX + x) / 2
+                    wavePath.addQuadCurve(to: CGPoint(x: x, y: y), control: CGPoint(x: controlX, y: y))
+                }
+
+                // Lower wave (mirror)
+                for i in (0..<sampledLevels.count).reversed() {
+                    let x = CGFloat(i) * stepX
+                    let amplitude = max(minAmplitude, CGFloat(sampledLevels[i]) * (height / 2 - minAmplitude))
+                    let y = midY + amplitude
+
+                    if i == sampledLevels.count - 1 {
+                        wavePath.addLine(to: CGPoint(x: x, y: y))
+                    } else {
+                        let nextX = CGFloat(i + 1) * stepX
+                        let controlX = (nextX + x) / 2
+                        wavePath.addQuadCurve(to: CGPoint(x: x, y: y), control: CGPoint(x: controlX, y: y))
+                    }
+                }
+                wavePath.closeSubpath()
+
+                // Draw filled wave
+                context.fill(wavePath, with: .color(color.opacity(0.6)))
+
+                // Draw center line
+                var centerLine = Path()
+                centerLine.move(to: CGPoint(x: 0, y: midY))
+                centerLine.addLine(to: CGPoint(x: width, y: midY))
+                context.stroke(centerLine, with: .color(color.opacity(0.3)), lineWidth: 1)
             }
             .frame(height: waveHeight)
+            .drawingGroup()  // Render to Metal for performance
         }
-        .animation(.linear(duration: 0.08), value: levels)
     }
 }
 
