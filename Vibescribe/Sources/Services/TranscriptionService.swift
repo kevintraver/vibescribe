@@ -10,13 +10,20 @@ final class TranscriptionService: ObservableObject {
     // MARK: - Configuration
 
     private let sampleRate: Double = 16000
-    private var silenceDurationSeconds: TimeInterval = 1.5
-    private var silenceThreshold: Float = 0.008
+    private var silenceDurationSeconds: TimeInterval = 1.0  // Reduced from 1.5s for more frequent line breaks
+    private var silenceThreshold: Float = 0.012  // Increased from 0.008 for better noise rejection
 
-    // Pause-based submission configuration
+    // Pause-based submission configuration (optimized based on VoiceInk/Handy analysis)
     private let pollIntervalSeconds: TimeInterval = 0.1  // Check every 100ms
-    private let speechEndDelaySeconds: TimeInterval = 0.4  // Submit after 400ms of silence
-    private let minSpeechSamples: Int = 4800  // Minimum 300ms of speech to transcribe
+    private let speechEndDelaySeconds: TimeInterval = 0.35  // Submit after 350ms of silence (was 400ms)
+    private let minSpeechSamples: Int = 4000  // Minimum 250ms of speech (was 300ms)
+
+    // Pre-roll buffer configuration (captures audio before speech detection)
+    private let preRollDurationSeconds: TimeInterval = 0.3  // 300ms pre-roll buffer
+    private var preRollSamples: Int { Int(sampleRate * preRollDurationSeconds) }
+
+    // Onset detection (requires consecutive speech frames to trigger)
+    private let onsetFramesRequired: Int = 2  // Require 2 consecutive speech frames (200ms)
 
     private var pollSamples: Int {
         Int(sampleRate * pollIntervalSeconds)
@@ -69,6 +76,14 @@ final class TranscriptionService: ObservableObject {
     /// When silence started (nil = currently speaking)
     private var micSilenceStart: Date?
     private var appSilenceStart: Date?
+
+    /// Pre-roll ring buffer (captures audio before speech detection)
+    private var micPreRollBuffer: [Float] = []
+    private var appPreRollBuffer: [Float] = []
+
+    /// Onset detection counters (consecutive speech frames)
+    private var micOnsetCount: Int = 0
+    private var appOnsetCount: Int = 0
 
     // MARK: - Initialization
 
@@ -189,6 +204,12 @@ final class TranscriptionService: ObservableObject {
         appSpeechBuffer.removeAll()
         micSilenceStart = nil
         appSilenceStart = nil
+
+        // Reset pre-roll buffers and onset counters
+        micPreRollBuffer.removeAll()
+        appPreRollBuffer.removeAll()
+        micOnsetCount = 0
+        appOnsetCount = 0
 
         // Reset audio levels
         micAudioLevels.removeAll()
@@ -344,33 +365,52 @@ final class TranscriptionService: ObservableObject {
             micAudioLevels.removeFirst()
         }
 
+        // Always update pre-roll buffer (ring buffer for capturing audio before speech)
+        micPreRollBuffer.append(contentsOf: samples)
+        while micPreRollBuffer.count > preRollSamples {
+            micPreRollBuffer.removeFirst(min(samples.count, micPreRollBuffer.count - preRollSamples))
+        }
+
         if isSpeech {
-            // Speech detected - accumulate and reset silence timer
-            micSpeechBuffer.append(contentsOf: samples)
+            micOnsetCount += 1
             micSilenceStart = nil
             lastSpeechTimes[.you] = Date()
 
-            // Create placeholder line if this is start of new speech
-            if currentLineIds[.you] == nil, let appState, let session = appState.currentSession {
-                let placeholderLine = TranscriptLine(
-                    text: "",
-                    speaker: .you,
-                    sessionId: session.id
-                )
-                currentLineIds[.you] = placeholderLine.id
-                appState.addLine(placeholderLine)
-                Log.info("Created placeholder line \(placeholderLine.id.uuidString.prefix(8)) for [You]", category: .transcription)
-            }
+            // Only start accumulating after onset threshold is met (reduces false triggers)
+            if micOnsetCount >= onsetFramesRequired {
+                // On first confirmed speech, prepend pre-roll buffer to capture word onset
+                if micSpeechBuffer.isEmpty && !micPreRollBuffer.isEmpty {
+                    micSpeechBuffer.append(contentsOf: micPreRollBuffer)
+                    Log.debug("Prepended \(micPreRollBuffer.count) pre-roll samples", category: .audio)
+                }
 
-            // Update speaker and line state to listening
-            appState?.speakerStates[.you] = .listening
-            if let lineId = currentLineIds[.you] {
-                appState?.lineStates[lineId] = .listening
-            }
+                // Accumulate speech samples
+                micSpeechBuffer.append(contentsOf: samples)
 
-            Log.debug("Mic speech: RMS=\(String(format: "%.4f", rms)), buffer=\(micSpeechBuffer.count)", category: .audio)
+                // Create placeholder line if this is start of new speech
+                if currentLineIds[.you] == nil, let appState, let session = appState.currentSession {
+                    let placeholderLine = TranscriptLine(
+                        text: "",
+                        speaker: .you,
+                        sessionId: session.id
+                    )
+                    currentLineIds[.you] = placeholderLine.id
+                    appState.addLine(placeholderLine)
+                    Log.info("Created placeholder line \(placeholderLine.id.uuidString.prefix(8)) for [You]", category: .transcription)
+                }
+
+                // Update speaker and line state to listening
+                appState?.speakerStates[.you] = .listening
+                if let lineId = currentLineIds[.you] {
+                    appState?.lineStates[lineId] = .listening
+                }
+
+                Log.debug("Mic speech: RMS=\(String(format: "%.4f", rms)), buffer=\(micSpeechBuffer.count)", category: .audio)
+            }
         } else {
-            // Silence detected
+            // Silence detected - reset onset counter
+            micOnsetCount = 0
+
             if micSilenceStart == nil && !micSpeechBuffer.isEmpty {
                 // Just transitioned to silence - start timer
                 micSilenceStart = Date()
@@ -431,24 +471,43 @@ final class TranscriptionService: ObservableObject {
             appAudioLevels.removeFirst()
         }
 
+        // Always update pre-roll buffer (ring buffer for capturing audio before speech)
+        appPreRollBuffer.append(contentsOf: samples)
+        while appPreRollBuffer.count > preRollSamples {
+            appPreRollBuffer.removeFirst(min(samples.count, appPreRollBuffer.count - preRollSamples))
+        }
+
         if isSpeech {
-            // Speech detected - accumulate and reset silence timer
-            appSpeechBuffer.append(contentsOf: samples)
+            appOnsetCount += 1
             appSilenceStart = nil
 
-            // Update state to listening for all potential remote speakers
-            // (We don't know which speaker until diarization runs)
-            for speakerIndex in 0..<4 {
-                let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
-                if let lineId = currentLineIds[speaker] {
-                    appState?.lineStates[lineId] = .listening
-                    appState?.speakerStates[speaker] = .listening
+            // Only start accumulating after onset threshold is met (reduces false triggers)
+            if appOnsetCount >= onsetFramesRequired {
+                // On first confirmed speech, prepend pre-roll buffer to capture word onset
+                if appSpeechBuffer.isEmpty && !appPreRollBuffer.isEmpty {
+                    appSpeechBuffer.append(contentsOf: appPreRollBuffer)
+                    Log.debug("App prepended \(appPreRollBuffer.count) pre-roll samples", category: .audio)
                 }
-            }
 
-            Log.debug("App speech: RMS=\(String(format: "%.4f", rms)), buffer=\(appSpeechBuffer.count)", category: .audio)
+                // Accumulate speech samples
+                appSpeechBuffer.append(contentsOf: samples)
+
+                // Update state to listening for all potential remote speakers
+                // (We don't know which speaker until diarization runs)
+                for speakerIndex in 0..<4 {
+                    let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
+                    if let lineId = currentLineIds[speaker] {
+                        appState?.lineStates[lineId] = .listening
+                        appState?.speakerStates[speaker] = .listening
+                    }
+                }
+
+                Log.debug("App speech: RMS=\(String(format: "%.4f", rms)), buffer=\(appSpeechBuffer.count)", category: .audio)
+            }
         } else {
-            // Silence detected
+            // Silence detected - reset onset counter
+            appOnsetCount = 0
+
             if appSilenceStart == nil && !appSpeechBuffer.isEmpty {
                 appSilenceStart = Date()
                 Log.debug("App silence started, buffer=\(appSpeechBuffer.count)", category: .audio)
