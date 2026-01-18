@@ -14,78 +14,90 @@ struct TranscriptView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(session.lines.filter { !$0.text.isEmpty }) { line in
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(session.lines.filter { !$0.text.isEmpty }) { line in
+                        let lineState = appState.lineStates[line.id] ?? .idle
+                        let isActive = lineState != .idle
+                        let audioLevels = audioLevelsForSpeaker(line.speaker)
+
+                        VStack(alignment: .leading, spacing: 4) {
                             TranscriptLineView(
                                 line: line,
                                 isSelected: selectedLines.contains(line.id),
                                 onCopy: { copyLine(line) },
                                 onSelect: { toggleSelection(line) }
                             )
-                            .id(line.id)
-                        }
 
-                        Color.clear
-                            .frame(height: 1)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.preference(
-                                        key: TranscriptBottomOffsetKey.self,
-                                        value: geo.frame(in: .named("transcriptScroll")).maxY
-                                    )
-                                }
-                            )
-                    }
-                    .padding()
-                }
-                .coordinateSpace(name: "transcriptScroll")
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear { scrollViewHeight = geo.size.height }
-                            .onChange(of: geo.size.height) { _, newValue in
-                                scrollViewHeight = newValue
+                            // Show waveform below active lines
+                            if isActive && !audioLevels.isEmpty {
+                                LiveWaveformView(
+                                    levels: audioLevels,
+                                    barColor: line.speaker.color.opacity(0.7)
+                                )
+                                .padding(.leading, 70)  // Align with text content
+                                .padding(.trailing, 12)
                             }
-                    }
-                )
-                .background(
-                    Button("Copy Selected") {
-                        copySelectedLines()
-                    }
-                    .keyboardShortcut("c", modifiers: .command)
-                    .opacity(0)
-                )
-                .onAppear {
-                    scrollProxy = proxy
-                }
-                .onChange(of: session.lines.count) { _, _ in
-                    if isAutoScrollEnabled, let lastLine = session.lines.last {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(lastLine.id, anchor: .bottom)
                         }
+                        .id(line.id)
                     }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: TranscriptBottomOffsetKey.self,
+                                    value: geo.frame(in: .named("transcriptScroll")).maxY
+                                )
+                            }
+                        )
                 }
-                .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
-                    let distanceToBottom = bottomOffset - scrollViewHeight
-                    isAutoScrollEnabled = distanceToBottom <= 50
+                .padding()
+            }
+            .coordinateSpace(name: "transcriptScroll")
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { scrollViewHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, newValue in
+                            scrollViewHeight = newValue
+                        }
+                }
+            )
+            .background(
+                Button("Copy Selected") {
+                    copySelectedLines()
+                }
+                .keyboardShortcut("c", modifiers: .command)
+                .opacity(0)
+            )
+            .onAppear {
+                scrollProxy = proxy
+            }
+            .onChange(of: session.lines.count) { _, _ in
+                if isAutoScrollEnabled, let lastLine = session.lines.last {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastLine.id, anchor: .bottom)
+                    }
                 }
             }
-
-            // Live waveform when recording
-            if isRecording {
-                LiveWaveformView(
-                    levels: transcriptionService.audioLevels,
-                    barColor: .blue.opacity(0.7)
-                )
-                .padding(.horizontal)
-                .padding(.vertical, 12)
-                .background(Color(nsColor: .textBackgroundColor))
+            .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
+                let distanceToBottom = bottomOffset - scrollViewHeight
+                isAutoScrollEnabled = distanceToBottom <= 50
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func audioLevelsForSpeaker(_ speaker: SpeakerID) -> [Float] {
+        switch speaker {
+        case .you:
+            return transcriptionService.micAudioLevels
+        case .remote:
+            return transcriptionService.appAudioLevels
+        }
     }
 
     private func toggleSelection(_ line: TranscriptLine) {

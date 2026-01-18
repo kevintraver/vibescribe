@@ -30,9 +30,10 @@ final class TranscriptionService: ObservableObject {
 
     // MARK: - Audio Levels for Visualization
 
-    /// Recent audio levels for waveform visualization (0.0 to 1.0)
-    @Published private(set) var audioLevels: [Float] = []
-    private let maxAudioLevelSamples = 100  // Number of bars in waveform
+    /// Recent audio levels for waveform visualization (0.0 to 1.0), per source
+    @Published private(set) var micAudioLevels: [Float] = []
+    @Published private(set) var appAudioLevels: [Float] = []
+    private let maxAudioLevelSamples = 80  // Number of bars in waveform
 
     // MARK: - Components
 
@@ -184,7 +185,8 @@ final class TranscriptionService: ObservableObject {
         appSilenceStart = nil
 
         // Reset audio levels
-        audioLevels.removeAll()
+        micAudioLevels.removeAll()
+        appAudioLevels.removeAll()
 
         // Start audio polling timer
         Log.info("Starting audio poll timer (interval: \(pollIntervalSeconds)s)", category: .audio)
@@ -331,9 +333,9 @@ final class TranscriptionService: ObservableObject {
 
         // Update audio levels for waveform visualization (normalize to 0-1, cap at 1)
         let normalizedLevel = min(rms * 10, 1.0)  // Scale up since speech is typically 0.01-0.1
-        audioLevels.append(normalizedLevel)
-        if audioLevels.count > maxAudioLevelSamples {
-            audioLevels.removeFirst()
+        micAudioLevels.append(normalizedLevel)
+        if micAudioLevels.count > maxAudioLevelSamples {
+            micAudioLevels.removeFirst()
         }
 
         if isSpeech {
@@ -415,6 +417,13 @@ final class TranscriptionService: ObservableObject {
     private func processAppSamples(_ samples: [Float]) async {
         let rms = calculateRMS(samples)
         let isSpeech = rms >= silenceThreshold
+
+        // Update audio levels for waveform visualization
+        let normalizedLevel = min(rms * 10, 1.0)
+        appAudioLevels.append(normalizedLevel)
+        if appAudioLevels.count > maxAudioLevelSamples {
+            appAudioLevels.removeFirst()
+        }
 
         if isSpeech {
             // Speech detected - accumulate and reset silence timer
