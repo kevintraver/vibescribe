@@ -66,6 +66,7 @@ final class TranscriptionService: ObservableObject {
     private var micCapture: MicCapture?
     private var appCapture: AppAudioCapture?
     private var chunkTimer: Timer?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     // MARK: - Current Session
 
@@ -108,6 +109,39 @@ final class TranscriptionService: ObservableObject {
 
     private init() {
         provider = FluidAudioProvider()
+        setupMemoryPressureHandling()
+    }
+
+    /// Set up memory pressure monitoring to handle low memory gracefully
+    private func setupMemoryPressureHandling() {
+        memoryPressureSource = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+
+        memoryPressureSource?.setEventHandler { [weak self] in
+            guard let self, let source = self.memoryPressureSource else { return }
+
+            let event = source.data
+            if event.contains(.critical) {
+                Log.warning("Critical memory pressure detected", category: .audio)
+                // On critical pressure, warn user but keep recording
+                // The model is essential for transcription, so we can't unload it
+                Task { @MainActor in
+                    self.appState?.showPermissionAlert(
+                        "Memory is critically low. Consider closing other apps to prevent issues."
+                    )
+                }
+            } else if event.contains(.warning) {
+                Log.info("Memory pressure warning received", category: .audio)
+                // Clear any non-essential buffers to reduce memory usage
+                self.micAudioLevels.removeAll(keepingCapacity: true)
+                self.appAudioLevels.removeAll(keepingCapacity: true)
+            }
+        }
+
+        memoryPressureSource?.resume()
+        Log.info("Memory pressure handling initialized", category: .audio)
     }
 
     /// Set the app state for updating UI
