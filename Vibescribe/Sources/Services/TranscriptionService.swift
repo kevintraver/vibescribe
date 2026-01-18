@@ -33,7 +33,13 @@ final class TranscriptionService: ObservableObject {
     /// Recent audio levels for waveform visualization (0.0 to 1.0), per source
     @Published private(set) var micAudioLevels: [Float] = []
     @Published private(set) var appAudioLevels: [Float] = []
-    private let maxAudioLevelSamples = 80  // Number of bars in waveform
+    private let maxAudioLevelSamples = 80  // Number of samples in waveform
+
+    /// Whether mic capture is active
+    var isMicActive: Bool { micCapture != nil }
+
+    /// Whether app capture is active
+    var isAppActive: Bool { appCapture != nil }
 
     // MARK: - Components
 

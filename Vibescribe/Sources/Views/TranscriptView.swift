@@ -13,91 +13,87 @@ struct TranscriptView: View {
         appState.recordingState == .recording
     }
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(session.lines.filter { !$0.text.isEmpty }) { line in
-                        let lineState = appState.lineStates[line.id] ?? .idle
-                        let isActive = lineState != .idle
-                        let audioLevels = audioLevelsForSpeaker(line.speaker)
+    private var hasMicRecording: Bool {
+        transcriptionService.isMicActive
+    }
 
-                        VStack(alignment: .leading, spacing: 4) {
+    private var hasAppRecording: Bool {
+        transcriptionService.isAppActive
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(session.lines.filter { !$0.text.isEmpty }) { line in
                             TranscriptLineView(
                                 line: line,
                                 isSelected: selectedLines.contains(line.id),
                                 onCopy: { copyLine(line) },
                                 onSelect: { toggleSelection(line) }
                             )
-
-                            // Show waveform below active lines
-                            if isActive && !audioLevels.isEmpty {
-                                LiveWaveformView(
-                                    levels: audioLevels,
-                                    barColor: line.speaker.color.opacity(0.7)
-                                )
-                                .padding(.leading, 70)  // Align with text content
-                                .padding(.trailing, 12)
-                            }
+                            .id(line.id)
                         }
-                        .id(line.id)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: TranscriptBottomOffsetKey.self,
+                                        value: geo.frame(in: .named("transcriptScroll")).maxY
+                                    )
+                                }
+                            )
                     }
-
-                    Color.clear
-                        .frame(height: 1)
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: TranscriptBottomOffsetKey.self,
-                                    value: geo.frame(in: .named("transcriptScroll")).maxY
-                                )
+                    .padding()
+                }
+                .coordinateSpace(name: "transcriptScroll")
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { scrollViewHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, newValue in
+                                scrollViewHeight = newValue
                             }
-                        )
+                    }
+                )
+                .background(
+                    Button("Copy Selected") {
+                        copySelectedLines()
+                    }
+                    .keyboardShortcut("c", modifiers: .command)
+                    .opacity(0)
+                )
+                .onAppear {
+                    scrollProxy = proxy
                 }
-                .padding()
-            }
-            .coordinateSpace(name: "transcriptScroll")
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { scrollViewHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { _, newValue in
-                            scrollViewHeight = newValue
+                .onChange(of: session.lines.count) { _, _ in
+                    if isAutoScrollEnabled, let lastLine = session.lines.last {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastLine.id, anchor: .bottom)
                         }
-                }
-            )
-            .background(
-                Button("Copy Selected") {
-                    copySelectedLines()
-                }
-                .keyboardShortcut("c", modifiers: .command)
-                .opacity(0)
-            )
-            .onAppear {
-                scrollProxy = proxy
-            }
-            .onChange(of: session.lines.count) { _, _ in
-                if isAutoScrollEnabled, let lastLine = session.lines.last {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastLine.id, anchor: .bottom)
                     }
                 }
+                .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
+                    let distanceToBottom = bottomOffset - scrollViewHeight
+                    isAutoScrollEnabled = distanceToBottom <= 50
+                }
             }
-            .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomOffset in
-                let distanceToBottom = bottomOffset - scrollViewHeight
-                isAutoScrollEnabled = distanceToBottom <= 50
+
+            // Waveform panel at bottom while recording
+            if isRecording {
+                RecordingWaveformPanel(
+                    micLevels: transcriptionService.micAudioLevels,
+                    appLevels: transcriptionService.appAudioLevels,
+                    hasMic: hasMicRecording,
+                    hasApp: hasAppRecording,
+                    appName: appState.selectedAppName
+                )
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
-    }
-
-    private func audioLevelsForSpeaker(_ speaker: SpeakerID) -> [Float] {
-        switch speaker {
-        case .you:
-            return transcriptionService.micAudioLevels
-        case .remote:
-            return transcriptionService.appAudioLevels
-        }
     }
 
     private func toggleSelection(_ line: TranscriptLine) {
@@ -138,26 +134,129 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
     }
 }
 
-/// Live audio waveform visualization
-struct LiveWaveformView: View {
+/// Continuous wave audio visualization
+struct ContinuousWaveView: View {
     let levels: [Float]
-    let barColor: Color
+    let color: Color
+    let label: String?
 
-    private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 2
-    private let maxHeight: CGFloat = 60
-    private let minHeight: CGFloat = 2
+    private let waveHeight: CGFloat = 40
+    private let minAmplitude: CGFloat = 2
+
+    init(levels: [Float], color: Color, label: String? = nil) {
+        self.levels = levels
+        self.color = color
+        self.label = label
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: barSpacing) {
-            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(barColor)
-                    .frame(width: barWidth, height: max(minHeight, CGFloat(level) * maxHeight))
+        VStack(alignment: .leading, spacing: 4) {
+            if let label {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { geo in
+                let width = geo.size.width
+                let height = geo.size.height
+                let midY = height / 2
+
+                // Create smooth wave path
+                Path { path in
+                    guard levels.count > 1 else {
+                        // Draw flat line if no data
+                        path.move(to: CGPoint(x: 0, y: midY))
+                        path.addLine(to: CGPoint(x: width, y: midY))
+                        return
+                    }
+
+                    let stepX = width / CGFloat(levels.count - 1)
+
+                    // Start at first point
+                    let firstAmplitude = max(minAmplitude, CGFloat(levels[0]) * (height / 2 - minAmplitude))
+                    path.move(to: CGPoint(x: 0, y: midY - firstAmplitude))
+
+                    // Draw upper wave with smooth curves
+                    for i in 1..<levels.count {
+                        let x = CGFloat(i) * stepX
+                        let amplitude = max(minAmplitude, CGFloat(levels[i]) * (height / 2 - minAmplitude))
+                        let y = midY - amplitude
+
+                        let prevX = CGFloat(i - 1) * stepX
+                        let controlX = (prevX + x) / 2
+
+                        path.addQuadCurve(
+                            to: CGPoint(x: x, y: y),
+                            control: CGPoint(x: controlX, y: y)
+                        )
+                    }
+
+                    // Draw lower wave (mirror)
+                    for i in (0..<levels.count).reversed() {
+                        let x = CGFloat(i) * stepX
+                        let amplitude = max(minAmplitude, CGFloat(levels[i]) * (height / 2 - minAmplitude))
+                        let y = midY + amplitude
+
+                        if i == levels.count - 1 {
+                            path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                            let nextX = CGFloat(i + 1) * stepX
+                            let controlX = (nextX + x) / 2
+
+                            path.addQuadCurve(
+                                to: CGPoint(x: x, y: y),
+                                control: CGPoint(x: controlX, y: y)
+                            )
+                        }
+                    }
+
+                    path.closeSubpath()
+                }
+                .fill(color.opacity(0.6))
+
+                // Center line
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: midY))
+                    path.addLine(to: CGPoint(x: width, y: midY))
+                }
+                .stroke(color.opacity(0.3), lineWidth: 1)
+            }
+            .frame(height: waveHeight)
+        }
+        .animation(.linear(duration: 0.08), value: levels)
+    }
+}
+
+/// Container for side-by-side waveforms at bottom of transcript
+struct RecordingWaveformPanel: View {
+    let micLevels: [Float]
+    let appLevels: [Float]
+    let hasMic: Bool
+    let hasApp: Bool
+    let appName: String?
+
+    var body: some View {
+        HStack(spacing: 16) {
+            if hasMic {
+                ContinuousWaveView(
+                    levels: micLevels,
+                    color: .blue,
+                    label: "You"
+                )
+            }
+
+            if hasApp {
+                ContinuousWaveView(
+                    levels: appLevels,
+                    color: .green,
+                    label: appName ?? "App"
+                )
             }
         }
-        .frame(height: maxHeight)
-        .animation(.easeOut(duration: 0.05), value: levels)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
     }
 }
 
