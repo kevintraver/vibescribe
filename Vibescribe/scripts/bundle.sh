@@ -12,14 +12,16 @@ echo "Building $APP_NAME..."
 swift build
 
 echo "Creating app bundle..."
-# Only create bundle structure if it doesn't exist (preserve TCC permissions)
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-# Copy executable (this is the only thing that changes on rebuild)
+# Copy executable
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 
-# Create Info.plist (only if needed or changed)
+# Copy entitlements
+cp "Vibescribe.entitlements" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+
+# Create Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,8 +55,16 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-# Ad-hoc sign to maintain consistent identity for TCC
-codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || true
+# Sign with Apple Development certificate (preserves TCC permissions across rebuilds)
+SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+if [ -n "$SIGNING_IDENTITY" ]; then
+    echo "Signing with: $SIGNING_IDENTITY"
+    codesign --force --sign "$SIGNING_IDENTITY" --entitlements "Vibescribe.entitlements" "$APP_BUNDLE"
+else
+    echo "No Apple Development certificate found, using ad-hoc signing..."
+    codesign --force --sign - --entitlements "Vibescribe.entitlements" "$APP_BUNDLE" 2>/dev/null || true
+fi
 
 echo "Done! Run with:"
 echo "  open $APP_BUNDLE"
