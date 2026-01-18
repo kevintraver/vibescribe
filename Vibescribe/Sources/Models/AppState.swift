@@ -50,8 +50,23 @@ final class AppState {
     /// Track unique remote speakers seen in current session (for display logic)
     var seenRemoteSpeakers: Set<Int> = []
 
-    /// Track which lines are currently being transcribed (for visual indicator)
-    var activeLineIds: Set<UUID> = []
+    /// Transcription activity state for visual indicators
+    enum TranscriptionState: Equatable {
+        case idle
+        case listening      // Accumulating audio
+        case processing     // Sent to model, waiting for result
+    }
+
+    /// Track transcription state per line (for visual indicator)
+    var lineStates: [UUID: TranscriptionState] = [:]
+
+    /// Track transcription state per speaker/source (for global indicator)
+    var speakerStates: [SpeakerID: TranscriptionState] = [:]
+
+    /// Convenience for backward compatibility
+    var activeLineIds: Set<UUID> {
+        Set(lineStates.filter { $0.value != .idle }.keys)
+    }
 
     /// Get display label for a speaker, considering app name and multi-speaker context
     func speakerDisplayLabel(for speaker: SpeakerID) -> String {
@@ -152,7 +167,8 @@ final class AppState {
 
         // Reset speaker tracking for new session
         seenRemoteSpeakers.removeAll()
-        activeLineIds.removeAll()
+        lineStates.removeAll()
+        speakerStates.removeAll()
 
         // Persist session immediately
         DatabaseManager.shared.saveSession(session)
