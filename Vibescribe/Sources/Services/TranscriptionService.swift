@@ -10,12 +10,16 @@ final class TranscriptionService: ObservableObject {
     // MARK: - Configuration
 
     private let sampleRate: Double = 16000
-    private let chunkDurationSeconds: TimeInterval = 1.5
     private var silenceDurationSeconds: TimeInterval = 1.5
     private var silenceThreshold: Float = 0.008
 
-    private var chunkSamples: Int {
-        Int(sampleRate * chunkDurationSeconds)
+    // Pause-based submission configuration
+    private let pollIntervalSeconds: TimeInterval = 0.1  // Check every 100ms
+    private let speechEndDelaySeconds: TimeInterval = 0.4  // Submit after 400ms of silence
+    private let minSpeechSamples: Int = 4800  // Minimum 300ms of speech to transcribe
+
+    private var pollSamples: Int {
+        Int(sampleRate * pollIntervalSeconds)
     }
 
     // MARK: - State
@@ -42,6 +46,16 @@ final class TranscriptionService: ObservableObject {
 
     private var currentLineIds: [SpeakerID: UUID] = [:]
     private var lastSpeechTimes: [SpeakerID: Date] = [:]
+
+    // MARK: - Pause-Based Submission State
+
+    /// Accumulated speech samples waiting for silence to trigger submission
+    private var micSpeechBuffer: [Float] = []
+    private var appSpeechBuffer: [Float] = []
+
+    /// When silence started (nil = currently speaking)
+    private var micSilenceStart: Date?
+    private var appSilenceStart: Date?
 
     // MARK: - Initialization
 
@@ -157,8 +171,14 @@ final class TranscriptionService: ObservableObject {
             }
         }
 
-        // Start chunk processing timer
-        Log.info("Starting chunk timer (interval: \(chunkDurationSeconds)s)", category: .audio)
+        // Reset speech buffers
+        micSpeechBuffer.removeAll()
+        appSpeechBuffer.removeAll()
+        micSilenceStart = nil
+        appSilenceStart = nil
+
+        // Start audio polling timer
+        Log.info("Starting audio poll timer (interval: \(pollIntervalSeconds)s)", category: .audio)
         startChunkTimer()
 
         PermissionsManager.shared.startMonitoringPermissions { [self] revoked in
@@ -253,107 +273,137 @@ final class TranscriptionService: ObservableObject {
 
     // MARK: - Chunk Processing
 
-    private var chunkTimerFireCount = 0
+    private var pollTimerFireCount = 0
 
     private func startChunkTimer() {
-        chunkTimerFireCount = 0
-        Log.info("Starting chunk timer with interval \(chunkDurationSeconds)s, chunkSamples needed: \(chunkSamples)", category: .audio)
-        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDurationSeconds, repeats: true) { [weak self] _ in
+        pollTimerFireCount = 0
+        Log.info("Starting poll timer with interval \(pollIntervalSeconds)s", category: .audio)
+        chunkTimer = Timer.scheduledTimer(withTimeInterval: pollIntervalSeconds, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.processChunks()
+                await self?.pollAudio()
             }
         }
     }
 
     private func stopChunkTimer() {
-        Log.info("Stopping chunk timer after \(chunkTimerFireCount) fires", category: .audio)
+        Log.info("Stopping poll timer after \(pollTimerFireCount) fires", category: .audio)
         chunkTimer?.invalidate()
         chunkTimer = nil
     }
 
-    /// Process accumulated audio chunks
-    private func processChunks() async {
-        guard !isPaused else {
-            Log.debug("processChunks - skipped (paused)", category: .audio)
-            return
+    /// Poll audio buffers and detect speech/silence transitions
+    private func pollAudio() async {
+        guard !isPaused else { return }
+
+        pollTimerFireCount += 1
+
+        // Poll mic audio
+        let micSamples = micBuffer.flush()
+        if !micSamples.isEmpty {
+            await processMicSamples(micSamples)
+        } else {
+            // No new samples, but check for silence timeout to submit accumulated speech
+            await checkMicSilenceTimeout()
         }
 
-        chunkTimerFireCount += 1
-        let micCount = micBuffer.count
-        let appCount = appBuffer.count
-
-        // Always log buffer state and line tracking
-        let lineState = currentLineIds.map { "\($0.key.displayLabel):\($0.value.uuidString.prefix(8))" }.joined(separator: ", ")
-        Log.info("processChunks #\(chunkTimerFireCount) - mic:\(micCount) app:\(appCount) need:\(chunkSamples) lines:[\(lineState)]", category: .audio)
-
-        // Process mic and app audio independently (no echo suppression needed)
-        // Mic is always "You", app audio uses diarization for speaker identification
-        if micCount >= chunkSamples {
-            Log.info(">>> Processing mic chunk (\(micCount) samples)", category: .audio)
-            await processMicChunk()
-        } else if micCount > 0 {
-            Log.debug("Mic buffer has \(micCount) samples, waiting for \(chunkSamples)", category: .audio)
-        }
-
-        if appCount >= chunkSamples {
-            Log.info(">>> Processing app chunk (\(appCount) samples)", category: .audio)
-            await processAppChunk()
+        // Poll app audio
+        let appSamples = appBuffer.flush()
+        if !appSamples.isEmpty {
+            await processAppSamples(appSamples)
+        } else {
+            await checkAppSilenceTimeout()
         }
     }
 
-    private func processMicChunk() async {
-        let samples = micBuffer.flush()
-        Log.info("processMicChunk - flushed \(samples.count) samples", category: .audio)
-
-        guard !samples.isEmpty else {
-            Log.warning("processMicChunk - NO SAMPLES after flush!", category: .audio)
-            return
-        }
-
-        let speaker: SpeakerID = .you
+    /// Process mic samples with pause-based submission
+    private func processMicSamples(_ samples: [Float]) async {
         let rms = calculateRMS(samples)
+        let isSpeech = rms >= silenceThreshold
 
-        // Check for silence
-        if rms < silenceThreshold {
-            Log.info("processMicChunk - SILENCE (RMS: \(String(format: "%.4f", rms)) < threshold: \(String(format: "%.4f", silenceThreshold)))", category: .audio)
-            if let lastSpeech = lastSpeechTimes[speaker] {
-                let timeSinceLastSpeech = Date().timeIntervalSince(lastSpeech)
-                Log.debug("Time since last speech: \(String(format: "%.2f", timeSinceLastSpeech))s, silence duration: \(silenceDurationSeconds)s", category: .audio)
-                if timeSinceLastSpeech > silenceDurationSeconds {
-                    Log.info("Clearing You line due to silence timeout", category: .audio)
-                    currentLineIds[speaker] = nil
-                }
+        if isSpeech {
+            // Speech detected - accumulate and reset silence timer
+            micSpeechBuffer.append(contentsOf: samples)
+            micSilenceStart = nil
+            lastSpeechTimes[.you] = Date()
+            Log.debug("Mic speech: RMS=\(String(format: "%.4f", rms)), buffer=\(micSpeechBuffer.count)", category: .audio)
+        } else {
+            // Silence detected
+            if micSilenceStart == nil && !micSpeechBuffer.isEmpty {
+                // Just transitioned to silence - start timer
+                micSilenceStart = Date()
+                Log.debug("Mic silence started, buffer=\(micSpeechBuffer.count)", category: .audio)
             }
-            return
-        }
-
-        lastSpeechTimes[speaker] = Date()
-        Log.info("processMicChunk - SPEECH detected (RMS: \(String(format: "%.4f", rms))), transcribing \(samples.count) samples...", category: .transcription)
-
-        do {
-            let result = try await provider.transcribe(samples, speaker: speaker)
-
-            if result.text.isEmpty {
-                Log.warning("processMicChunk - transcription returned EMPTY text", category: .transcription)
-                return
-            }
-
-            Log.info("Transcribed [You]: \"\(result.text)\"", category: .transcription)
-            await handleTranscriptionResult(result)
-        } catch {
-            Log.error("Mic transcription error: \(error)", category: .transcription)
+            await checkMicSilenceTimeout()
         }
     }
 
-    private func processAppChunk() async {
-        let samples = appBuffer.flush()
-        guard !samples.isEmpty else { return }
+    /// Check if mic silence timeout reached and submit accumulated speech
+    private func checkMicSilenceTimeout() async {
+        guard let silenceStart = micSilenceStart else { return }
+        guard !micSpeechBuffer.isEmpty else { return }
 
+        let silenceDuration = Date().timeIntervalSince(silenceStart)
+        if silenceDuration >= speechEndDelaySeconds {
+            // Silence timeout - submit accumulated speech
+            let samples = micSpeechBuffer
+            micSpeechBuffer.removeAll()
+            micSilenceStart = nil
+
+            if samples.count >= minSpeechSamples {
+                Log.info("Mic submitting \(samples.count) samples after \(String(format: "%.2f", silenceDuration))s silence", category: .transcription)
+                await transcribeMicSamples(samples)
+            } else {
+                Log.debug("Mic discarding \(samples.count) samples (below minimum \(minSpeechSamples))", category: .audio)
+            }
+
+            // Check for line finalization after longer silence
+            if let lastSpeech = lastSpeechTimes[.you],
+               Date().timeIntervalSince(lastSpeech) > silenceDurationSeconds {
+                currentLineIds[.you] = nil
+            }
+        }
+    }
+
+    /// Process app samples with pause-based submission
+    private func processAppSamples(_ samples: [Float]) async {
         let rms = calculateRMS(samples)
+        let isSpeech = rms >= silenceThreshold
 
-        if rms < silenceThreshold {
-            Log.debug("processAppChunk - silence (RMS: \(String(format: "%.4f", rms)))", category: .audio)
-            // Check all remote speakers for silence timeout
+        if isSpeech {
+            // Speech detected - accumulate and reset silence timer
+            appSpeechBuffer.append(contentsOf: samples)
+            appSilenceStart = nil
+            Log.debug("App speech: RMS=\(String(format: "%.4f", rms)), buffer=\(appSpeechBuffer.count)", category: .audio)
+        } else {
+            // Silence detected
+            if appSilenceStart == nil && !appSpeechBuffer.isEmpty {
+                appSilenceStart = Date()
+                Log.debug("App silence started, buffer=\(appSpeechBuffer.count)", category: .audio)
+            }
+            await checkAppSilenceTimeout()
+        }
+    }
+
+    /// Check if app silence timeout reached and submit accumulated speech
+    private func checkAppSilenceTimeout() async {
+        guard let silenceStart = appSilenceStart else { return }
+        guard !appSpeechBuffer.isEmpty else { return }
+
+        let silenceDuration = Date().timeIntervalSince(silenceStart)
+        if silenceDuration >= speechEndDelaySeconds {
+            // Silence timeout - submit accumulated speech
+            let samples = appSpeechBuffer
+            appSpeechBuffer.removeAll()
+            appSilenceStart = nil
+
+            if samples.count >= minSpeechSamples {
+                Log.info("App submitting \(samples.count) samples after \(String(format: "%.2f", silenceDuration))s silence", category: .transcription)
+                await transcribeAppSamples(samples)
+            } else {
+                Log.debug("App discarding \(samples.count) samples (below minimum \(minSpeechSamples))", category: .audio)
+            }
+
+            // Check for line finalization after longer silence
             for speakerIndex in 0..<4 {
                 let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
                 if let lastSpeech = lastSpeechTimes[speaker],
@@ -361,9 +411,30 @@ final class TranscriptionService: ObservableObject {
                     currentLineIds[speaker] = nil
                 }
             }
-            return
         }
+    }
 
+    /// Transcribe accumulated mic speech samples
+    private func transcribeMicSamples(_ samples: [Float]) async {
+        let speaker: SpeakerID = .you
+
+        do {
+            let result = try await provider.transcribe(samples, speaker: speaker)
+
+            if result.text.isEmpty {
+                Log.debug("Mic transcription returned empty text", category: .transcription)
+                return
+            }
+
+            Log.info("Transcribed [You]: \"\(result.text)\" (\(samples.count) samples)", category: .transcription)
+            await handleTranscriptionResult(result)
+        } catch {
+            Log.error("Mic transcription error: \(error)", category: .transcription)
+        }
+    }
+
+    /// Transcribe accumulated app speech samples with diarization
+    private func transcribeAppSamples(_ samples: [Float]) async {
         // Determine speaker using diarization (or fallback to speaker 0)
         var speakerIndex = 0
         if await diarizer.isReady {
@@ -380,14 +451,15 @@ final class TranscriptionService: ObservableObject {
         let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
         lastSpeechTimes[speaker] = Date()
 
-        Log.info("processAppChunk - speech detected (RMS: \(String(format: "%.4f", rms))), speaker: \(speaker.displayLabel)", category: .transcription)
-
         do {
             let result = try await provider.transcribe(samples, speaker: speaker)
 
-            guard !result.text.isEmpty else { return }
+            guard !result.text.isEmpty else {
+                Log.debug("App transcription returned empty text", category: .transcription)
+                return
+            }
 
-            Log.info("Transcribed [\(speaker.displayLabel)]: \"\(result.text)\"", category: .transcription)
+            Log.info("Transcribed [\(speaker.displayLabel)]: \"\(result.text)\" (\(samples.count) samples)", category: .transcription)
             await handleTranscriptionResult(result)
         } catch {
             Log.error("App transcription error: \(error)", category: .transcription)
@@ -448,39 +520,29 @@ final class TranscriptionService: ObservableObject {
 
     /// Process any remaining audio when stopping
     private func processRemainingAudio() async {
-        // Process mic
-        let micSamples = micBuffer.flush()
-        if !micSamples.isEmpty && !isSilence(micSamples) {
-            do {
-                let result = try await provider.transcribe(micSamples, speaker: .you)
-                if !result.text.isEmpty {
-                    await handleTranscriptionResult(result)
-                }
-            } catch {
-                Log.error("Final mic transcription error: \(error)", category: .transcription)
-            }
+        // Process any remaining samples in capture buffers
+        let remainingMic = micBuffer.flush()
+        if !remainingMic.isEmpty {
+            micSpeechBuffer.append(contentsOf: remainingMic)
+        }
+        let remainingApp = appBuffer.flush()
+        if !remainingApp.isEmpty {
+            appSpeechBuffer.append(contentsOf: remainingApp)
         }
 
-        // Process app (use last known speaker or default to speaker 0)
-        let appSamples = appBuffer.flush()
-        if !appSamples.isEmpty && !isSilence(appSamples) {
-            var speakerIndex = 0
-            if await diarizer.isReady {
-                if let currentSpeaker = await diarizer.getCurrentSpeaker() {
-                    speakerIndex = currentSpeaker
-                }
-            }
-            let speaker: SpeakerID = .remote(speakerIndex: speakerIndex)
-
-            do {
-                let result = try await provider.transcribe(appSamples, speaker: speaker)
-                if !result.text.isEmpty {
-                    await handleTranscriptionResult(result)
-                }
-            } catch {
-                Log.error("Final app transcription error: \(error)", category: .transcription)
-            }
+        // Submit accumulated mic speech
+        if micSpeechBuffer.count >= minSpeechSamples {
+            Log.info("Final mic transcription: \(micSpeechBuffer.count) samples", category: .transcription)
+            await transcribeMicSamples(micSpeechBuffer)
         }
+        micSpeechBuffer.removeAll()
+
+        // Submit accumulated app speech
+        if appSpeechBuffer.count >= minSpeechSamples {
+            Log.info("Final app transcription: \(appSpeechBuffer.count) samples", category: .transcription)
+            await transcribeAppSamples(appSpeechBuffer)
+        }
+        appSpeechBuffer.removeAll()
     }
 
     // MARK: - Helpers

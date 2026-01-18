@@ -35,9 +35,12 @@ final class FluidAudioProvider: @unchecked Sendable {
 
             progressHandler?(0.5)
 
-            // Initialize ASR manager
+            // Initialize ASR manager with custom config
             Log.info("Initializing ASR manager...", category: .transcription)
-            let manager = AsrManager(config: .default)
+            let tdtConfig = TdtConfig(maxSymbolsPerStep: 20)  // Doubled from default 10
+            let asrConfig = ASRConfig(tdtConfig: tdtConfig)
+            Log.info("TDT config: maxSymbolsPerStep=\(tdtConfig.maxSymbolsPerStep)", category: .transcription)
+            let manager = AsrManager(config: asrConfig)
             try await manager.initialize(models: downloadedModels)
             Log.info("ASR manager initialized!", category: .transcription)
 

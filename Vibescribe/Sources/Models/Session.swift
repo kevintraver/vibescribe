@@ -9,9 +9,28 @@ final class Session: Identifiable {
     var endTime: Date?
     var lines: [TranscriptLine]
 
+    /// Total time spent paused
+    var pausedDuration: TimeInterval = 0
+    /// When the current pause started (nil if not paused)
+    var pauseStartTime: Date?
+
     var duration: TimeInterval {
         let end = endTime ?? Date()
-        return end.timeIntervalSince(startTime)
+        let totalElapsed = end.timeIntervalSince(startTime)
+        // Subtract paused time, including current pause if active
+        let currentPauseTime = pauseStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        return totalElapsed - pausedDuration - currentPauseTime
+    }
+
+    func pause() {
+        guard pauseStartTime == nil else { return }
+        pauseStartTime = Date()
+    }
+
+    func resume() {
+        guard let pauseStart = pauseStartTime else { return }
+        pausedDuration += Date().timeIntervalSince(pauseStart)
+        pauseStartTime = nil
     }
 
     var isActive: Bool {

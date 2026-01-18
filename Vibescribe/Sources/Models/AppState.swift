@@ -162,6 +162,7 @@ final class AppState {
     func pauseRecording() {
         guard recordingState.canPause else { return }
         recordingState = .paused
+        currentSession?.pause()
         if let session = currentSession {
             EventLogger.shared.log(.recordingPause, sessionId: session.id)
         }
@@ -170,6 +171,7 @@ final class AppState {
     func resumeRecording() {
         guard recordingState.canResume else { return }
         recordingState = .recording
+        currentSession?.resume()
         if let session = currentSession {
             EventLogger.shared.log(.recordingResume, sessionId: session.id)
         }
